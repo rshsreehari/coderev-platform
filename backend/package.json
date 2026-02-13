@@ -1,0 +1,28 @@
+{
+  "name": "code-review-backend",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "nodemon --env-file=.env.local src/index.js",
+    "worker": "nodemon --env-file=.env.local src/worker.js",
+    "dlq-monitor": "nodemon --env-file=.env.local src/dlq-monitor.js",
+    "start": "node src/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "aws-sdk": "^2.1693.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.4",
+    "eslint": "^10.0.0",
+    "express": "^5.2.1",
+    "pg": "^8.18.0",
+    "redis": "^5.10.0",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
