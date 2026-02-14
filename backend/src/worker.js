@@ -38,7 +38,7 @@ async function processJob() {
       ["processing", receiveCount, job.jobId]
     );
 
-    const result = await analyzeCode(job.fileName, job.fileContent);
+    const result = await analyzeCode(job.fileContent, job.fileName);
 
     await setCachedReview(job.codeHash, result);
 

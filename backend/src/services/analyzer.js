@@ -1,58 +1,73 @@
 const path = require('path');
 const { ESLint } = require('eslint');
 
-async function analyzeCode(fileName, fileContent) {
-  const startTime = Date.now();
+async function analyzeCode(fileContent, fileName) {
+  if (process.env.ALLOW_FORCE_FAIL === "true" && fileName === "force_fail.js") {
+    throw new Error("Forced failure for DLQ testing");
+  }
+  try {
+    // Simulate processing time
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
-  const eslint = new ESLint({
-    overrideConfigFile: path.join(__dirname, "../../eslint.config.js"),
-  });
+    // Mock analysis based on code patterns
+    const security = [];
+    const performance = [];
+    const aiSuggestions = [];
 
-
-  const results = await eslint.lintText(fileContent, { filePath: fileName });
-
-  const issues = {
-    security: [],
-    performance: [],
-    style: [],
-  };
-
-  const securityRules = ['no-eval', 'no-implied-eval', 'no-new-func'];
-  const performanceRules = ['no-await-in-loop', 'no-inner-declarations'];
-
-  results[0].messages.forEach((msg) => {
-    const issue = {
-      line: msg.line,
-      column: msg.column,
-      message: msg.message,
-      severity: msg.severity === 2 ? 'high' : msg.severity === 1 ? 'medium' : 'low',
-      rule: msg.ruleId,
-      file: fileName,
-    };
-
-    if (securityRules.includes(msg.ruleId)) {
-      issues.security.push(issue);
-    } else if (performanceRules.includes(msg.ruleId)) {
-      issues.performance.push(issue);
-    } else {
-      issues.style.push(issue);
+    // Check for common issues
+    if (fileContent.includes('eval(')) {
+      security.push({
+        severity: 'critical',
+        line: fileContent.split('\n').findIndex((l) => l.includes('eval(')),
+        message: 'Unsafe eval() usage detected. Use Function constructor instead.',
+        rule: 'no-eval',
+        fix: 'Replace eval with safer alternatives',
+      });
     }
-  });
 
-  const processingTime = Date.now() - startTime;
+    if (fileContent.includes('console.log')) {
+      performance.push({
+        severity: 'warning',
+        line: fileContent.split('\n').findIndex((l) => l.includes('console.log')),
+        message: 'Debug console.log left in code. Remove for production.',
+        rule: 'no-console',
+        fix: 'Remove console statements',
+      });
+    }
 
-  return {
-    security: issues.security,
-    performance: issues.performance,
-    aiSuggestions: [], // We'll add AI later
-    metrics: {
-      reviewTime: `${(processingTime / 1000).toFixed(1)}s`,
-      cacheHit: false,
-      linesAnalyzed: fileContent.split('\n').length,
-      issuesFound: results[0].messages.length,
-      processingTimeMs: processingTime,
-    },
-  };
+    if (fileContent.includes('var ')) {
+      aiSuggestions.push({
+        type: 'code-quality',
+        message: 'Use const/let instead of var for better scoping',
+        severity: 'info',
+      });
+    }
+
+    if (fileContent.length > 1000) {
+      aiSuggestions.push({
+        type: 'maintainability',
+        message: 'Consider breaking this file into smaller modules',
+        severity: 'info',
+      });
+    }
+
+    const linesAnalyzed = fileContent.split('\n').length;
+    const issuesFound = security.length + performance.length;
+
+    return {
+      security,
+      performance,
+      aiSuggestions,
+      metrics: {
+        linesAnalyzed,
+        issuesFound,
+        cacheHit: false,
+        reviewTime: '0.5s',
+      },
+    };
+  } catch (error) {
+    throw new Error(`Analysis failed: ${error.message}`);
+  }
 }
 
 module.exports = { analyzeCode };
