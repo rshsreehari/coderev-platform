@@ -227,7 +227,7 @@ export default function CodeReviewPlatformWithDLQ() {
           setStatusMessage('Moved to DLQ');
           fetchDLQMessages();
         } else {
-          setStatusMessage(`Processing... (attempt ${attempts}/${maxAttempts})`);
+          setStatusMessage(`Processing... ( ${attempts}/${maxAttempts})`);
         }
       } catch (error) {
         clearInterval(jobPollRef.current);

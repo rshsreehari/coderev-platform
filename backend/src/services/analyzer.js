@@ -50,6 +50,219 @@ const PATTERNS = {
   BLOCK_END: /^\s*\}/,
 };
 
+// ==============================================
+// ASYNC/CONCURRENCY BUG PATTERNS
+// ==============================================
+const ASYNC_PATTERNS = {
+  // Race conditions - shared state mutation without locks
+  RACE_CONDITION_SHARED: /let\s+\w+\s*=\s*(?:0|null|undefined|\[\]|\{\})[\s\S]*?(?:async|Promise)/,
+  
+  // Promise overwrite - reassigning promise before awaiting
+  PROMISE_OVERWRITE: /(\w+)\s*=\s*(?:fetch|axios|new Promise|\.then)[\s\S]{0,100}?\1\s*=\s*(?:fetch|axios|new Promise|\.then)/,
+  
+  // Missing await
+  MISSING_AWAIT: /(?:const|let|var)\s+\w+\s*=\s*(?:fetch|axios\.(?:get|post|put|delete)|\.findOne|\.find\(|\.create\(|\.update\()/,
+  
+  // setInterval without clearInterval - potential memory leak
+  INTERVAL_NO_CLEAR: /setInterval\s*\([^)]+\)/,
+  
+  // setTimeout in loop without proper closure
+  SETTIMEOUT_IN_LOOP: /(?:for|while)\s*\([^)]+\)\s*\{[^}]*setTimeout/,
+  
+  // Event listener without removeEventListener
+  LISTENER_NO_REMOVE: /addEventListener\s*\(\s*['"][^'"]+['"]/,
+  
+  // Array push in async without mutex
+  ASYNC_ARRAY_PUSH: /async[^{]*\{[^}]*\.push\s*\(/,
+  
+  // No AbortController for fetch
+  FETCH_NO_ABORT: /fetch\s*\([^)]+\)(?![\s\S]{0,50}AbortController|signal)/,
+  
+  // Retry without exponential backoff
+  RETRY_NO_BACKOFF: /(?:retry|attempt|tries)\s*(?:\+\+|--|\+=|\-=)[\s\S]{0,200}(?:setTimeout|delay)\s*\([^,]+,\s*\d{2,4}\s*\)/,
+  
+  // Global state mutation in async
+  GLOBAL_ASYNC_MUTATION: /(?:global|window|globalThis)\.\w+\s*=[\s\S]{0,50}(?:await|async|Promise)/,
+  
+  // Stale closure in useEffect/callback
+  STALE_CLOSURE: /useEffect\s*\(\s*\(\s*\)\s*=>\s*\{[^}]*(?:let|const)\s+\w+[\s\S]*?setTimeout|setInterval/,
+  
+  // Infinite loop potential
+  INFINITE_LOOP: /while\s*\(\s*true\s*\)|for\s*\(\s*;\s*;\s*\)/,
+  
+  // forEach with async (doesn't await properly)
+  FOREACH_ASYNC: /\.forEach\s*\(\s*async/,
+};
+
+// Async issue suggestions
+function getAsyncSuggestion(type) {
+  const suggestions = {
+    'race-condition': 'Use mutex/semaphore or atomic operations. Consider using a state management library.',
+    'promise-overwrite': 'Store promises in separate variables or use Promise.all() for parallel operations.',
+    'missing-await': 'Add await keyword or handle the Promise with .then()/.catch().',
+    'memory-leak-interval': 'Store interval ID and call clearInterval() in cleanup (useEffect return, componentWillUnmount).',
+    'memory-leak-timeout': 'Use let variable outside loop to preserve timeout reference, or use closure properly.',
+    'memory-leak-listener': 'Store listener reference and call removeEventListener() in cleanup.',
+    'async-array-race': 'Use mutex pattern or collect results with Promise.all() instead of pushing to shared array.',
+    'missing-abort-controller': 'Add AbortController to allow cancellation of in-flight requests.',
+    'retry-hammering': 'Implement exponential backoff: delay = baseDelay * Math.pow(2, retryCount).',
+    'global-state-corruption': 'Avoid mutating global state in async code. Use local state or proper state management.',
+    'stale-closure': 'Add state variables to dependency array or use useRef for mutable values.',
+    'infinite-loop': 'Add exit condition or use recursion with base case instead.',
+    'foreach-async': 'Use for...of loop with await, or Promise.all(items.map(async item => ...)).',
+  };
+  return suggestions[type] || 'Review async/await patterns and ensure proper synchronization.';
+}
+
+// Detect async/concurrency issues
+function detectAsyncIssues(fileContent, fileName) {
+  const issues = [];
+  const lines = fileContent.split('\n');
+  
+  // Track context
+  const hasAsync = /async\s+function|async\s*\(|\.then\(|await\s/.test(fileContent);
+  const hasReact = /import\s+.*React|useEffect|useState|useRef/.test(fileContent);
+  
+  // Only check for async issues if file has async patterns
+  if (!hasAsync && !hasReact) {
+    return issues;
+  }
+  
+  // Check for forEach with async (common mistake)
+  const forEachAsyncMatch = fileContent.match(/\.forEach\s*\(\s*async/g);
+  if (forEachAsyncMatch) {
+    for (let i = 0; i < lines.length; i++) {
+      if (/\.forEach\s*\(\s*async/.test(lines[i])) {
+        issues.push({
+          line: i + 1,
+          column: 1,
+          message: 'forEach with async callback does not await - use for...of or Promise.all(map())',
+          severity: 'high',
+          rule: 'async/foreach-async',
+          file: fileName,
+          suggestion: getAsyncSuggestion('foreach-async'),
+          category: 'concurrency',
+        });
+      }
+    }
+  }
+  
+  // Check for setInterval without cleanup tracking
+  for (let i = 0; i < lines.length; i++) {
+    if (/setInterval\s*\(/.test(lines[i]) && !/(?:const|let|var)\s+\w+\s*=\s*setInterval/.test(lines[i])) {
+      issues.push({
+        line: i + 1,
+        column: 1,
+        message: 'setInterval without storing reference - potential memory leak',
+        severity: 'medium',
+        rule: 'async/memory-leak-interval',
+        file: fileName,
+        suggestion: getAsyncSuggestion('memory-leak-interval'),
+        category: 'memory-leak',
+      });
+    }
+  }
+  
+  // Check for fetch without AbortController
+  for (let i = 0; i < lines.length; i++) {
+    if (/fetch\s*\(/.test(lines[i])) {
+      // Look for AbortController in surrounding context (20 lines)
+      const contextStart = Math.max(0, i - 10);
+      const contextEnd = Math.min(lines.length, i + 10);
+      const context = lines.slice(contextStart, contextEnd).join('\n');
+      
+      if (!/AbortController|signal\s*:/.test(context)) {
+        issues.push({
+          line: i + 1,
+          column: 1,
+          message: 'fetch() without AbortController - cannot cancel request on unmount',
+          severity: 'low',
+          rule: 'async/missing-abort-controller',
+          file: fileName,
+          suggestion: getAsyncSuggestion('missing-abort-controller'),
+          category: 'concurrency',
+        });
+      }
+    }
+  }
+  
+  // Check for potential stale closures in useEffect
+  if (hasReact) {
+    for (let i = 0; i < lines.length; i++) {
+      if (/useEffect\s*\(\s*\(\s*\)\s*=>\s*\{/.test(lines[i])) {
+        // Look ahead for setTimeout/setInterval without deps
+        const effectEnd = Math.min(lines.length, i + 20);
+        const effectContent = lines.slice(i, effectEnd).join('\n');
+        
+        if (/setTimeout|setInterval/.test(effectContent) && /\[\s*\]\s*\)/.test(effectContent)) {
+          issues.push({
+            line: i + 1,
+            column: 1,
+            message: 'useEffect with setTimeout/setInterval and empty deps may cause stale closure',
+            severity: 'medium',
+            rule: 'async/stale-closure',
+            file: fileName,
+            suggestion: getAsyncSuggestion('stale-closure'),
+            category: 'concurrency',
+          });
+        }
+      }
+    }
+  }
+  
+  // Check for infinite loops
+  for (let i = 0; i < lines.length; i++) {
+    if (/while\s*\(\s*true\s*\)|for\s*\(\s*;\s*;\s*\)/.test(lines[i])) {
+      // Check if there's a break or return nearby
+      const loopEnd = Math.min(lines.length, i + 15);
+      const loopContent = lines.slice(i, loopEnd).join('\n');
+      
+      if (!/break\s*;|return\s/.test(loopContent)) {
+        issues.push({
+          line: i + 1,
+          column: 1,
+          message: 'Infinite loop without break/return condition detected',
+          severity: 'critical',
+          rule: 'async/infinite-loop',
+          file: fileName,
+          suggestion: getAsyncSuggestion('infinite-loop'),
+          category: 'concurrency',
+        });
+      }
+    }
+  }
+  
+  // Check for promise variable overwrite pattern
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const promiseAssignMatch = line.match(/(\w+)\s*=\s*(?:fetch|axios|new Promise)/);
+    if (promiseAssignMatch) {
+      const varName = promiseAssignMatch[1];
+      // Check if same variable is reassigned before await
+      for (let j = i + 1; j < Math.min(lines.length, i + 10); j++) {
+        if (new RegExp(`await\\s+${varName}`).test(lines[j])) {
+          break; // Properly awaited
+        }
+        if (new RegExp(`${varName}\\s*=\\s*(?:fetch|axios|new Promise)`).test(lines[j])) {
+          issues.push({
+            line: j + 1,
+            column: 1,
+            message: `Promise variable '${varName}' overwritten before being awaited - previous result lost`,
+            severity: 'high',
+            rule: 'async/promise-overwrite',
+            file: fileName,
+            suggestion: getAsyncSuggestion('promise-overwrite'),
+            category: 'concurrency',
+          });
+          break;
+        }
+      }
+    }
+  }
+  
+  return issues;
+}
+
 // Helper function to provide fix suggestions
 function getFixSuggestion(ruleId) {
   const suggestions = {
@@ -150,6 +363,131 @@ function detectPatternIssues(fileContent, fileName) {
         suggestion: 'Replace == with === to prevent type coercion bugs.',
       });
     }
+
+    // 5. SQL INJECTION
+    if (/(?:query|execute|raw)\s*\(\s*[`'"].*\$\{|\+\s*\w+/.test(line) || 
+        /(?:query|execute)\s*\([^)]*\+\s*(?:req\.|params\.|body\.|query\.)/.test(line)) {
+      issues.security.push({
+        line: lineNum,
+        message: 'Potential SQL Injection: User input concatenated into query.',
+        severity: 'critical',
+        rule: 'sql-injection',
+        suggestion: 'Use parameterized queries: query("SELECT * FROM users WHERE id = $1", [userId])',
+      });
+    }
+
+    // 6. XSS - innerHTML/outerHTML with dynamic content
+    if (/\.innerHTML\s*=|\.outerHTML\s*=|document\.write\s*\(/.test(line) && /\$\{|\+/.test(line)) {
+      issues.security.push({
+        line: lineNum,
+        message: 'Potential XSS: Dynamic content in innerHTML/outerHTML.',
+        severity: 'critical',
+        rule: 'xss-vulnerability',
+        suggestion: 'Use textContent for text or sanitize HTML with DOMPurify.',
+      });
+    }
+
+    // 7. HARDCODED SECRETS
+    if (/(?:password|secret|api_?key|token|auth)\s*[:=]\s*['"][^'"]{8,}['"]/.test(line.toLowerCase())) {
+      issues.security.push({
+        line: lineNum,
+        message: 'Potential hardcoded secret detected.',
+        severity: 'critical',
+        rule: 'hardcoded-secret',
+        suggestion: 'Use environment variables: process.env.API_KEY',
+      });
+    }
+
+    // 8. PATH TRAVERSAL
+    if (/(?:readFile|writeFile|unlink|rmdir|access)\s*\([^)]*(?:req\.|params\.|query\.|body\.)/.test(line)) {
+      issues.security.push({
+        line: lineNum,
+        message: 'Potential Path Traversal: User input in file operation.',
+        severity: 'critical',
+        rule: 'path-traversal',
+        suggestion: 'Validate path with path.resolve() and ensure it stays within allowed directory.',
+      });
+    }
+
+    // 9. PROTOTYPE POLLUTION
+    if (/\[.*\]\s*=(?!=)|\.__proto__|Object\.assign\s*\([^,]+,\s*(?:req\.|body\.|params\.)/.test(line)) {
+      issues.security.push({
+        line: lineNum,
+        message: 'Potential Prototype Pollution vulnerability.',
+        severity: 'high',
+        rule: 'prototype-pollution',
+        suggestion: 'Validate object keys, use Object.create(null), or use Map instead.',
+      });
+    }
+
+    // 10. INSECURE RANDOM
+    if (/Math\.random\s*\(\)/.test(line) && /(?:token|password|secret|key|id|session)/i.test(line)) {
+      issues.security.push({
+        line: lineNum,
+        message: 'Insecure random number generator used for security-sensitive value.',
+        severity: 'high',
+        rule: 'insecure-random',
+        suggestion: 'Use crypto.randomBytes() or crypto.randomUUID() for secure random values.',
+      });
+    }
+
+    // 11. MISSING ERROR HANDLING
+    if (/\.catch\s*\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/.test(line) || /catch\s*\([^)]*\)\s*\{\s*\}/.test(line)) {
+      issues.security.push({
+        line: lineNum,
+        message: 'Empty catch block swallows errors silently.',
+        severity: 'medium',
+        rule: 'empty-catch',
+        suggestion: 'Log the error or rethrow it: catch(err) { console.error(err); throw err; }',
+      });
+    }
+
+    // 12. N+1 QUERY (database in loop)
+    if (loopDepth > 0 && /(?:await\s+)?(?:db|pool|prisma|knex|sequelize|mongoose)\.\w+\s*\(/.test(line)) {
+      issues.performance.push({
+        line: lineNum,
+        message: 'Database query inside loop - potential N+1 query problem.',
+        severity: 'high',
+        rule: 'n-plus-one-query',
+        suggestion: 'Batch queries using WHERE IN clause or use eager loading.',
+      });
+    }
+
+    // 13. SYNCHRONOUS FILE OPERATIONS
+    if (/(?:readFileSync|writeFileSync|existsSync|readdirSync|statSync)\s*\(/.test(line)) {
+      issues.performance.push({
+        line: lineNum,
+        message: 'Synchronous file operation blocks event loop.',
+        severity: 'medium',
+        rule: 'sync-file-operation',
+        suggestion: 'Use async versions: fs.promises.readFile() or fs.readFile() with callback.',
+      });
+    }
+
+    // 14. UNBOUNDED ARRAY GROWTH
+    if (/\.push\s*\(/.test(line) && loopDepth > 0 && !/\.length\s*[<>]/.test(fileContent.substring(Math.max(0, index - 200), index))) {
+      issues.performance.push({
+        line: lineNum,
+        message: 'Array push in loop without size check may cause memory issues.',
+        severity: 'low',
+        rule: 'unbounded-array',
+        suggestion: 'Add size limit check: if (arr.length < MAX_SIZE) arr.push(item)',
+      });
+    }
+
+    // 15. MISSING INPUT VALIDATION
+    if (/req\.(?:body|params|query)\.\w+/.test(line) && !/(?:validate|sanitize|check|joi|yup|zod)/.test(fileContent.substring(Math.max(0, index - 500), index))) {
+      // Only flag once per function
+      if (!issues.security.some(i => i.rule === 'missing-validation' && Math.abs(i.line - lineNum) < 10)) {
+        issues.security.push({
+          line: lineNum,
+          message: 'User input used without apparent validation.',
+          severity: 'medium',
+          rule: 'missing-validation',
+          suggestion: 'Validate input using Joi, Yup, Zod, or express-validator.',
+        });
+      }
+    }
   });
 
   return issues;
@@ -170,7 +508,21 @@ async function analyzeCode(fileContent, fileName) {
     const patternIssues = detectPatternIssues(fileContent, fileName);
 
     // ============================================
-    // STAGE 1b: Static Analysis (ESLint)
+    // STAGE 1b: Async/Concurrency Bug Detection
+    // ============================================
+    const asyncIssues = detectAsyncIssues(fileContent, fileName);
+    
+    // Merge async issues into appropriate categories
+    asyncIssues.forEach(issue => {
+      if (issue.category === 'memory-leak' || issue.category === 'concurrency') {
+        patternIssues.performance.push(issue);
+      } else {
+        patternIssues.security.push(issue);
+      }
+    });
+
+    // ============================================
+    // STAGE 1c: Static Analysis (ESLint)
     // ============================================
 
     const eslint = new ESLint({
