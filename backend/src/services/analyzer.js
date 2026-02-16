@@ -493,6 +493,156 @@ function detectSemanticIssues(fileContent, fileName) {
     });
   }
   
+  // ===== 10. RATE LIMITER DESIGN FLAWS =====
+  
+  // Detect rate limiter patterns
+  const isRateLimiter = /rate.*limit|limiter|throttle|quota/i.test(fullCode) || 
+    (/limit/.test(fullCode) && /window|count|request/i.test(fullCode));
+  
+  if (isRateLimiter) {
+    // Fixed-window rate limiter (burst-prone)
+    if (/Date\.now\(\)|new Date\(\)/.test(fullCode) && /count\s*[+<>=]|\.count/.test(fullCode)) {
+      const hasSliding = /sliding|token.*bucket|leaky.*bucket|rolling/i.test(fullCode);
+      if (!hasSliding) {
+        const windowLine = lines.findIndex(l => /window|start|timestamp/i.test(l)) + 1 || 1;
+        issues.push({
+          line: windowLine,
+          message: 'Fixed-window rate limiter is burst-prone - allows 2x limit at window boundaries',
+          severity: 'high',
+          rule: 'design/fixed-window-limiter',
+          suggestion: 'Use sliding window, token bucket, or leaky bucket algorithm for smooth rate limiting.',
+          category: 'design',
+        });
+      }
+    }
+    
+    // No Retry-After header signaling
+    if (/throw.*Error|return.*false|reject/i.test(fullCode) && !/retry.*after|retryAfter|Retry-After/i.test(fullCode)) {
+      issues.push({
+        line: 1,
+        message: 'Rate limiter does not signal retry time to clients',
+        severity: 'medium',
+        rule: 'design/no-retry-after',
+        suggestion: 'Return or set Retry-After header: { retryAfter: Math.ceil((windowEnd - now) / 1000) }',
+        category: 'design',
+      });
+    }
+    
+    // Single-process limitation (no distributed support)
+    if (/this\.\w+\s*=\s*\{\}|this\.\w+\s*=\s*\[\]|new Map\(\)/.test(fullCode)) {
+      const hasDistributed = /redis|memcache|database|db\.|cluster|distributed/i.test(fullCode);
+      if (!hasDistributed) {
+        issues.push({
+          line: 1,
+          message: 'In-memory rate limiter only works for single process - fails in clustered/distributed environments',
+          severity: 'high',
+          rule: 'design/single-process-limiter',
+          suggestion: 'Use Redis or distributed cache for rate limiting in production: redis.incr(key), redis.expire()',
+          category: 'design',
+        });
+      }
+    }
+  }
+  
+  // ===== 11. TIME-BASED ISSUES =====
+  
+  // Date.now() for timing-sensitive operations
+  if (/Date\.now\(\)/.test(fullCode) && /[<>]=?\s*\w+\.\w+|diff|elapsed|window/i.test(fullCode)) {
+    const hasMonotonic = /performance\.now|process\.hrtime|monotonic/i.test(fullCode);
+    if (!hasMonotonic) {
+      const timeLine = lines.findIndex(l => /Date\.now\(\)/.test(l)) + 1;
+      issues.push({
+        line: timeLine,
+        message: 'Date.now() is affected by system clock changes/drift - unreliable for timing',
+        severity: 'medium',
+        rule: 'design/clock-drift',
+        suggestion: 'Use performance.now() or process.hrtime() for monotonic timing in critical paths.',
+        category: 'reliability',
+      });
+    }
+  }
+  
+  // ===== 12. CACHE/STORAGE WITHOUT EVICTION =====
+  
+  // Object/Map used as cache without eviction
+  if (/this\.\w+\s*=\s*\{\}|new Map\(\)|cache|store|registry/i.test(fullCode)) {
+    const hasEviction = /delete\s+|\.delete\s*\(|evict|expire|ttl|lru|maxSize|max_size|cleanup/i.test(fullCode);
+    const hasWeakMap = /WeakMap/.test(fullCode);
+    
+    if (!hasEviction && !hasWeakMap && /\[\w+\]\s*=/.test(fullCode)) {
+      const cacheLine = lines.findIndex(l => /=\s*\{\}|new Map\(\)/i.test(l)) + 1 || 1;
+      issues.push({
+        line: cacheLine,
+        message: 'Object/Map used as cache without eviction strategy - will grow unbounded',
+        severity: 'high',
+        rule: 'design/no-eviction',
+        suggestion: 'Add TTL-based eviction, LRU policy, or use WeakMap for automatic GC of unused entries.',
+        category: 'memory-leak',
+      });
+    }
+  }
+  
+  // ===== 13. CONCURRENT ACCESS WITHOUT ATOMICITY =====
+  
+  // Read-modify-write pattern without atomicity
+  if (/(\w+)\s*\+\+|(\w+)\s*\+=\s*1|(\w+)\s*=\s*\2\s*\+\s*1/.test(fullCode)) {
+    // Check if this is in a concurrent context
+    const isConcurrent = /async|Promise|concurrent|parallel|request|handler/i.test(fullCode);
+    const hasLock = /mutex|lock|semaphore|atomic|synchronized/i.test(fullCode);
+    
+    if (isConcurrent && !hasLock) {
+      const incrementLine = lines.findIndex(l => /\+\+|\+=\s*1/.test(l)) + 1;
+      if (incrementLine > 0) {
+        issues.push({
+          line: incrementLine,
+          message: 'Non-atomic read-modify-write (count++) in concurrent context - race condition',
+          severity: 'high',
+          rule: 'design/non-atomic-increment',
+          suggestion: 'Use atomic operations or mutex: await mutex.acquire(); try { count++; } finally { mutex.release(); }',
+          category: 'concurrency',
+        });
+      }
+    }
+  }
+  
+  // ===== 14. GLOBAL MUTABLE STATE =====
+  
+  // Global variables modified by request handlers
+  if (/(?:const|let|var)\s+\w+\s*=\s*(?:new \w+|\{\}|\[\])/.test(fullCode)) {
+    // Check if it's at module level and used in functions
+    const moduleVars = [...fullCode.matchAll(/^(?:const|let|var)\s+(\w+)\s*=/gm)].map(m => m[1]);
+    const hasMutation = moduleVars.some(v => new RegExp(`${v}\\s*\\.\\s*\\w+\\s*=|${v}\\s*\\[`).test(fullCode));
+    const isInHandler = /function\s+\w*\s*\(.*req|app\.(get|post|put|delete)|router\.|handler/i.test(fullCode);
+    
+    if (hasMutation && isInHandler && !/singleton|instance/i.test(fullCode)) {
+      issues.push({
+        line: 1,
+        message: 'Global mutable state shared across request handlers - unsafe under concurrent load',
+        severity: 'high',
+        rule: 'design/global-mutable-state',
+        suggestion: 'Use request-scoped state, dependency injection, or thread-safe data structures.',
+        category: 'concurrency',
+      });
+    }
+  }
+  
+  // ===== 15. MISSING BACKPRESSURE =====
+  
+  // Queue/buffer without backpressure
+  if (/\.push\s*\(|\.add\s*\(|enqueue/i.test(fullCode) && /queue|buffer|pending/i.test(fullCode)) {
+    const hasBackpressure = /reject|throw|isFull|highWaterMark|backpressure|pause|maxSize/i.test(fullCode);
+    if (!hasBackpressure) {
+      issues.push({
+        line: 1,
+        message: 'Queue accepts items without backpressure - no way to signal producers to slow down',
+        severity: 'medium',
+        rule: 'design/no-backpressure',
+        suggestion: 'Reject or block when queue is full: if (queue.length >= MAX) throw new Error("Backpressure")',
+        category: 'reliability',
+      });
+    }
+  }
+  
   return issues;
 }
 
