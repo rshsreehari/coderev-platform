@@ -20,8 +20,13 @@ async function generateReviewPDF(reviewData, outputPath) {
       content += `FILE: ${reviewData.fileName}\n`;
       content += `LINES ANALYZED: ${reviewData.metrics.linesAnalyzed}\n`;
       content += `REVIEW TIME: ${reviewData.metrics.reviewTime}\n`;
+      if (reviewData.metrics.originalReviewTime) {
+        content += `ORIGINAL ANALYSIS TIME: ${reviewData.metrics.originalReviewTime}\n`;
+        content += `CACHE STATUS: ✓ Cache Hit (served instantly)\n`;
+      }
       content += `TOTAL ISSUES FOUND: ${reviewData.metrics.issuesFound}\n`;
-      content += `PROCESSING TIME: ${reviewData.metrics.processingTimeMs}ms\n\n`;
+      content += `PROCESSING TIME: ${reviewData.metrics.processingTimeMs}ms\n`;
+      content += `GENERATED AT: ${new Date().toISOString()}\n\n`;
 
       // Security Issues
       if (reviewData.security && reviewData.security.length > 0) {

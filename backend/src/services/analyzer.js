@@ -270,6 +270,48 @@ async function analyzeCode(fileContent, fileName) {
     const processingTime = Date.now() - startTime;
 
     // ============================================
+    // Calculate Quality Score
+    // ============================================
+    const calculateQualityScore = () => {
+      // Start with 100 points
+      let score = 100;
+      
+      // Deduct points for issues (weighted by severity)
+      // Security issues are most severe
+      score -= issues.security.filter(i => i.severity === 'critical').length * 15;
+      score -= issues.security.filter(i => i.severity === 'high').length * 10;
+      score -= issues.security.filter(i => i.severity === 'medium').length * 5;
+      score -= issues.security.filter(i => i.severity === 'low').length * 2;
+      
+      // Performance issues
+      score -= issues.performance.filter(i => i.severity === 'critical').length * 10;
+      score -= issues.performance.filter(i => i.severity === 'high').length * 7;
+      score -= issues.performance.filter(i => i.severity === 'medium').length * 4;
+      score -= issues.performance.filter(i => i.severity === 'low').length * 1;
+      
+      // Style issues (minor deductions)
+      score -= issues.style.length * 0.5;
+      
+      // AI suggestions
+      score -= aiSuggestions.filter(s => s.severity === 'critical').length * 8;
+      score -= aiSuggestions.filter(s => s.severity === 'high').length * 5;
+      score -= aiSuggestions.filter(s => s.severity === 'medium').length * 3;
+      score -= aiSuggestions.filter(s => s.severity === 'low').length * 1;
+      
+      // Ensure score is between 0 and 100
+      score = Math.max(0, Math.min(100, score));
+      
+      // Convert to letter grade
+      if (score >= 90) return 'A';
+      if (score >= 80) return 'B';
+      if (score >= 70) return 'C';
+      if (score >= 60) return 'D';
+      return 'F';
+    };
+
+    const qualityScore = calculateQualityScore();
+
+    // ============================================
     // Return Combined Results
     // ============================================
 
@@ -279,6 +321,7 @@ async function analyzeCode(fileContent, fileName) {
       performance: issues.performance,
       style: issues.style,
       aiSuggestions,
+      qualityScore,
       metrics: {
         reviewTime: `${(processingTime / 1000).toFixed(1)}s`,
         linesAnalyzed: lines,

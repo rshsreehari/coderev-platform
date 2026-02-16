@@ -23,17 +23,34 @@ async function submitReview(req, res) {
     if (cachedResult) {
       const jobId = uuidv4();
 
+      // Preserve original analysis time and update for cache hit
+      const originalReviewTime = cachedResult.metrics?.reviewTime || 'N/A';
+      const originalProcessingTimeMs = cachedResult.metrics?.processingTimeMs || 0;
+      
+      // Update metrics to reflect cache hit timing
+      const updatedResult = {
+        ...cachedResult,
+        metrics: {
+          ...cachedResult.metrics,
+          reviewTime: '<0.1s',  // Cache retrieval is instant
+          processingTimeMs: 0,
+          originalReviewTime,   // Preserve original for reference
+          originalProcessingTimeMs,
+        }
+      };
+
       await pool.query(
         `INSERT INTO review_jobs (id, user_id, code_hash, file_name, file_content, status, result, cache_hit, completed_at, processing_time_ms)
          VALUES ($1, $2, $3, $4, $5, 'complete', $6, true, NOW(), 0)`,
-        [jobId, userId, codeHash, fileName, fileContent, JSON.stringify(cachedResult)]
+        [jobId, userId, codeHash, fileName, fileContent, JSON.stringify(updatedResult)]
       );
 
       return res.json({
         jobId,
         status: 'complete',
-        result: cachedResult,
+        result: updatedResult,
         cacheHit: true,
+        cachedAt: new Date().toISOString(),
       });
     }
 

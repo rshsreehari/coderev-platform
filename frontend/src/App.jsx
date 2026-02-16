@@ -293,7 +293,7 @@ export default function CodeReviewPlatformWithDLQ() {
             <div className="flex items-center gap-3">
               <Atom className="w-8 h-8 text-blue-400" />
               <div>
-                <h1 className="text-3xl font-bold text-white">CORE Platform</h1>
+                <h1 className="text-3xl font-bold text-white">CORE</h1>
                 <p className="text-sm text-gray-400">Code review platform with advanced features</p>
               </div>
             </div>
@@ -565,7 +565,11 @@ export default function CodeReviewPlatformWithDLQ() {
                   <div>
                     <h2 className="text-xl font-bold text-white">Review Results</h2>
                     <p className="text-sm text-gray-400 mt-1">
-                      Completed in {jobResult.metrics?.reviewTime || 'N/A'} • {jobResult.metrics?.linesAnalyzed || 0} lines analyzed
+                      {jobResult.cacheHit ? (
+                        <>Retrieved in {jobResult.metrics?.reviewTime || '<0.1s'} (originally analyzed in {jobResult.metrics?.originalReviewTime || 'N/A'})</>
+                      ) : (
+                        <>Completed in {jobResult.metrics?.reviewTime || 'N/A'}</>
+                      )} • {jobResult.metrics?.linesAnalyzed || 0} lines analyzed
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
@@ -604,8 +608,15 @@ export default function CodeReviewPlatformWithDLQ() {
                   </div>
                   <div className="bg-slate-800/50 rounded-lg p-4 border border-slate-700">
                     <p className="text-sm text-gray-400">Code Quality</p>
-                    <p className="text-3xl font-bold text-green-400">
-                      {jobResult.qualityScore || 'A'}
+                    <p className={`text-3xl font-bold ${
+                      jobResult.qualityScore === 'A' ? 'text-green-400' :
+                      jobResult.qualityScore === 'B' ? 'text-blue-400' :
+                      jobResult.qualityScore === 'C' ? 'text-yellow-400' :
+                      jobResult.qualityScore === 'D' ? 'text-orange-400' :
+                      jobResult.qualityScore === 'F' ? 'text-red-400' :
+                      'text-gray-400'
+                    }`}>
+                      {jobResult.qualityScore || '-'}
                     </p>
                   </div>
                 </div>
@@ -616,7 +627,9 @@ export default function CodeReviewPlatformWithDLQ() {
                     <CheckCircle className="w-6 h-6 text-blue-400 flex-shrink-0" />
                     <div>
                       <p className="font-semibold text-blue-300">Cache Hit!</p>
-                      <p className="text-sm text-blue-400">Result served from cache in &lt;100ms</p>
+                      <p className="text-sm text-blue-400">
+                        Result served from cache instantly • Original analysis took {jobResult.metrics?.originalReviewTime || 'N/A'}
+                      </p>
                     </div>
                   </div>
                 )}
