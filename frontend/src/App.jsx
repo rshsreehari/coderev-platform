@@ -4,7 +4,7 @@ import {
   AlertCircle,
   CheckCircle,
   RefreshCw,
-  Home,
+  Atom,
   History,
   AlertTriangle,
   Loader,
@@ -291,10 +291,10 @@ export default function CodeReviewPlatformWithDLQ() {
         <div className="max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
-              <Home className="w-8 h-8 text-blue-400" />
+              <Atom className="w-8 h-8 text-blue-400" />
               <div>
-                <h1 className="text-3xl font-bold text-white">Code Review Platform</h1>
-                <p className="text-sm text-gray-400">With DLQ Management & Real-time Monitoring</p>
+                <h1 className="text-3xl font-bold text-white">CORE Platform</h1>
+                <p className="text-sm text-gray-400">Code review platform with advanced features</p>
               </div>
             </div>
             <div className="flex items-center gap-4">
@@ -1002,14 +1002,14 @@ export default function CodeReviewPlatformWithDLQ() {
       {/* Footer */}
       <footer className="bg-slate-900 border-t border-slate-700 mt-12">
         <div className="max-w-7xl mx-auto px-4 py-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
             <div>
               <h3 className="font-semibold text-white mb-2">System Architecture</h3>
               <ul className="text-sm text-gray-400 space-y-1">
-                <li>✓ Express.js API Server</li>
+                <li>✓ Express.js Server</li>
                 <li>✓ Worker Queue (SQS)</li>
-                <li>✓ DLQ Management</li>
                 <li>✓ Redis Caching</li>
+                <li>✓ DLQ Management</li>
               </ul>
             </div>
             <div>
@@ -1018,22 +1018,26 @@ export default function CodeReviewPlatformWithDLQ() {
                 <li>✓ Real-time Code Analysis</li>
                 <li>✓ Failed Job Recovery</li>
                 <li>✓ Cache Hit Optimization</li>
-                <li>✓ Live DLQ Monitoring</li>
+                <li>✓ Detailed report to download</li>
               </ul>
             </div>
             <div>
-              <h3 className="font-semibold text-white mb-2">API Endpoints</h3>
+              <h3 className="font-semibold text-white mb-2">Documentations</h3>
               <ul className="text-sm text-gray-400 space-y-1">
-                <li>/api/reviews/submit</li>
-                <li>/api/reviews/status/:jobId</li>
-                <li>/api/dlq</li>
-                <li>/health</li>
+                <li>Docs</li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="font-semibold text-white mb-2">Social</h3>
+              <ul className="text-sm text-gray-400 space-y-1">
+                <li>✓ LinkedIN</li>
+                <li>✓ GitHub</li>
               </ul>
             </div>
           </div>
           <div className="border-t border-slate-700 mt-6 pt-6 text-center text-sm text-gray-500">
             <p>
-              © 2024 Code Review Platform | DLQ Implementation v1.0.0
+              © 2026 CORE Platform | v1.0.0 | Built by Sreehari
             </p>
           </div>
         </div>

@@ -36,34 +36,8 @@ class AnalysisError extends Error {
 // PRE-COMPILED REGEX (Performance Optimization)
 // ==============================================
 const PATTERNS = {
-  // Security patterns - SQL Injection
-  SQL_INJECTION: /(\+\s*['"`]?\s*(SELECT|INSERT|UPDATE|DELETE|DROP|WHERE|FROM|AND|OR)\s)|(\$\{[^}]*\}.*(?:SELECT|INSERT|UPDATE|DELETE|WHERE))|(['"`]\s*\+\s*\w+.*(?:SELECT|INSERT|UPDATE|DELETE|WHERE|FROM))/i,
-  SQL_QUERY_CONCAT: /(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE).*['"`]\s*\+\s*\w+|['"`]\s*\+\s*\w+.*['"`].*(?:SELECT|INSERT|UPDATE|DELETE|WHERE|FROM)/i,
-  
-  // Command Injection - exec with dynamic input
-  COMMAND_INJECTION: /exec\s*\([^)]*(\+|\$\{|\`)/,
-  CHILD_PROCESS_EXEC: /require\s*\(\s*['"`]child_process['"`]\s*\).*exec\s*\(/,
-  
-  // XSS - User input in HTML response
-  XSS_RESPONSE: /res\.(send|write)\s*\([^)]*\+\s*\w+|res\.(send|write)\s*\([^)]*\$\{/,
-  
-  // Hardcoded secrets
-  HARDCODED_PASSWORD: /password\s*[:=]\s*['"`][^'"` ]{3,}['"`]/i,
-  HARDCODED_SECRET: /(api[_-]?key|secret|token|auth)\s*[:=]\s*['"`][^'"` ]{8,}['"`]/i,
-  
-  // Weak crypto
-  WEAK_HASH_MD5: /createHash\s*\(\s*['"`]md5['"`]\s*\)/i,
-  WEAK_HASH_SHA1: /createHash\s*\(\s*['"`]sha1['"`]\s*\)/i,
-  
-  // Memory leak - unbounded growth
-  MEMORY_LEAK_PUSH: /\w+\s*\.\s*push\s*\([^)]+\)/,
-  GLOBAL_ARRAY: /^(const|let|var)\s+\w+\s*=\s*\[\s*\]/,
-  
-  // Open redirect
-  OPEN_REDIRECT: /res\.redirect\s*\(\s*req\.(body|query|params)/,
-  
-  // Insecure session
-  WEAK_SESSION_ID: /Math\.random\s*\(\s*\)/,
+  // Security patterns
+  COMMAND_INJECTION: /exec\s*\(\s*[`'"].*(\+|\$\{)/,
   
   // Performance patterns
   STRING_CONCAT_ASSIGNMENT: /\w+\s*\+=\s*['"`]/,
@@ -92,13 +66,10 @@ function getFixSuggestion(ruleId) {
   return suggestions[ruleId] || 'Follow best practices to fix this issue.';
 }
 
-// Pattern detectors for advanced issues with COMPREHENSIVE SECURITY CHECKS
+// Pattern detectors for advanced issues with PROPER LOOP TRACKING
 function detectPatternIssues(fileContent, fileName) {
   const issues = { security: [], performance: [], style: [] };
   const lines = fileContent.split('\n');
-
-  // Track global arrays for memory leak detection
-  const globalArrays = new Set();
 
   // ✅ Track loop depth properly to avoid false positives
   let loopDepth = 0;
@@ -107,27 +78,24 @@ function detectPatternIssues(fileContent, fileName) {
   lines.forEach((line, index) => {
     const lineNum = index + 1;
     const trimmed = line.trim();
-    const lineLower = line.toLowerCase();
-
-    // Track global arrays defined at module level
-    if (PATTERNS.GLOBAL_ARRAY.test(trimmed) && braceStack.length === 0) {
-      const match = trimmed.match(/^(?:const|let|var)\s+(\w+)/);
-      if (match) globalArrays.add(match[1]);
-    }
 
     // Track entering loops (increment depth when we see loop start)
     if (PATTERNS.LOOP_START.test(trimmed) || /\.(forEach|map|filter|reduce)\s*\(/.test(line)) {
       loopDepth++;
+      // Count opening braces to track when loop ends
       const openBraces = (line.match(/\{/g) || []).length;
       const closeBraces = (line.match(/\}/g) || []).length;
       braceStack.push({ type: 'loop', braces: openBraces - closeBraces });
     } else {
+      // Track braces for non-loop lines
       const openBraces = (line.match(/\{/g) || []).length;
       const closeBraces = (line.match(/\}/g) || []).length;
       const netBraces = openBraces - closeBraces;
 
+      // Update brace tracking
       if (braceStack.length > 0) {
         braceStack[braceStack.length - 1].braces += netBraces;
+        // If braces balance out, we've exited the loop
         while (braceStack.length > 0 && braceStack[braceStack.length - 1].braces <= 0) {
           const popped = braceStack.pop();
           if (popped.type === 'loop') {
@@ -137,120 +105,18 @@ function detectPatternIssues(fileContent, fileName) {
       }
     }
 
-    // ==========================================
-    // 🔴 CRITICAL SECURITY CHECKS
-    // ==========================================
-
-    // 1. SQL INJECTION - String concatenation in SQL queries (including template literals)
-    if ((lineLower.includes('select') || lineLower.includes('insert') || 
-         lineLower.includes('update') || lineLower.includes('delete') ||
-         lineLower.includes('where') || lineLower.includes('from')) && 
-        (line.includes("'+") || line.includes("+ '") || line.includes('${') || line.includes('" +') ||
-         /`[^`]*\$\{[^}]+\}[^`]*`/.test(line))) {
+    // 1. COMMAND INJECTION - Always check (not loop-dependent)
+    if (PATTERNS.COMMAND_INJECTION.test(line)) {
       issues.security.push({
         line: lineNum,
-        message: 'SQL Injection: User input concatenated into SQL query.',
-        severity: 'critical',
-        rule: 'sql-injection',
-        suggestion: 'Use parameterized queries: db.query("SELECT * FROM users WHERE id = ?", [userId])',
-      });
-    }
-
-    // 2. COMMAND INJECTION - exec/spawn with user input
-    if (/exec\s*\(/.test(line) && (line.includes('+') || line.includes('${') || line.includes('req.'))) {
-      issues.security.push({
-        line: lineNum,
-        message: 'Command Injection: User input in shell command.',
+        message: 'Potential Command Injection: Avoid dynamic strings in exec().',
         severity: 'critical',
         rule: 'command-injection',
-        suggestion: 'Use execFile() with arguments array, never concatenate user input into commands.',
+        suggestion: 'Use execFile() with arguments array, or sanitize input with a whitelist.',
       });
     }
 
-    // 3. XSS - User input in HTML response  
-    if (/res\.(send|write)\s*\(/.test(line) && /['"`].*<.*>/.test(line) &&
-        (line.includes('+') || line.includes('${'))) {
-      issues.security.push({
-        line: lineNum,
-        message: 'XSS Vulnerability: User input rendered in HTML without escaping.',
-        severity: 'high',
-        rule: 'xss',
-        suggestion: 'Escape HTML entities or use a templating engine with auto-escaping.',
-      });
-    }
-
-    // 4. HARDCODED CREDENTIALS
-    if (PATTERNS.HARDCODED_PASSWORD.test(line) && !line.includes('process.env')) {
-      issues.security.push({
-        line: lineNum,
-        message: 'Hardcoded password detected in source code.',
-        severity: 'critical',
-        rule: 'hardcoded-credentials',
-        suggestion: 'Use environment variables: process.env.DB_PASSWORD',
-      });
-    }
-
-    // 5. WEAK CRYPTO - MD5/SHA1 for passwords
-    if (PATTERNS.WEAK_HASH_MD5.test(line)) {
-      issues.security.push({
-        line: lineNum,
-        message: 'Weak cryptography: MD5 is broken for password hashing.',
-        severity: 'critical',
-        rule: 'weak-crypto',
-        suggestion: 'Use bcrypt or argon2 for password hashing: await bcrypt.hash(password, 12)',
-      });
-    }
-
-    if (PATTERNS.WEAK_HASH_SHA1.test(line) && lineLower.includes('password')) {
-      issues.security.push({
-        line: lineNum,
-        message: 'Weak cryptography: SHA1 is not recommended for passwords.',
-        severity: 'high',
-        rule: 'weak-crypto',
-        suggestion: 'Use bcrypt or argon2 for password hashing.',
-      });
-    }
-
-    // 6. OPEN REDIRECT - res.redirect with variable (not hardcoded URL)
-    if (/res\.redirect\s*\(\s*\w+\s*\)/.test(line) && !line.includes("'") && !line.includes('"')) {
-      issues.security.push({
-        line: lineNum,
-        message: 'Open Redirect: User-controlled redirect URL.',
-        severity: 'high',
-        rule: 'open-redirect',
-        suggestion: 'Validate redirect URLs against a whitelist of allowed domains.',
-      });
-    }
-
-    // 7. WEAK SESSION ID
-    if (PATTERNS.WEAK_SESSION_ID.test(line) && lineLower.includes('session')) {
-      issues.security.push({
-        line: lineNum,
-        message: 'Insecure session ID: Math.random() is not cryptographically secure.',
-        severity: 'high',
-        rule: 'weak-session',
-        suggestion: 'Use crypto.randomUUID() or crypto.randomBytes(32).toString("hex")',
-      });
-    }
-
-    // 8. MEMORY LEAK - Unbounded array growth
-    for (const arrayName of globalArrays) {
-      if (line.includes(`${arrayName}.push(`) && !line.includes('// bounded')) {
-        issues.security.push({
-          line: lineNum,
-          message: `Memory Leak: Unbounded growth of global array "${arrayName}".`,
-          severity: 'high',
-          rule: 'memory-leak',
-          suggestion: 'Add size limits, use LRU cache, or store in Redis/database.',
-        });
-      }
-    }
-
-    // ==========================================
-    // ⚡ PERFORMANCE CHECKS
-    // ==========================================
-
-    // STRING CONCATENATION in loop
+    // 2. STRING CONCATENATION - Only flag if INSIDE a loop
     if (loopDepth > 0) {
       if (PATTERNS.STRING_CONCAT_ASSIGNMENT.test(line) || PATTERNS.STRING_CONCAT_BINARY.test(line)) {
         issues.performance.push({
@@ -263,22 +129,18 @@ function detectPatternIssues(fileContent, fileName) {
       }
     }
 
-    // REGEX IN LOOP
+    // 3. REGEX IN LOOP - Only flag if INSIDE a loop
     if (loopDepth > 0 && PATTERNS.REGEX_CREATION.test(trimmed)) {
       issues.performance.push({
         line: lineNum,
         message: 'Regex defined inside loop causes recompilation on each iteration.',
         severity: 'medium',
         rule: 'regex-in-loop',
-        suggestion: 'Move regex definition outside the loop.',
+        suggestion: 'Move regex definition outside the loop: const pattern = /.../ before the loop.',
       });
     }
 
-    // ==========================================
-    // 📝 STYLE CHECKS
-    // ==========================================
-
-    // LOOSE EQUALITY
+    // 4. LOOSE EQUALITY (Style)
     if (/[^!=]==[^=]/.test(line) && !/===/.test(line)) {
       issues.style.push({
         line: lineNum,
