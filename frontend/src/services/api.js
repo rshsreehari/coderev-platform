@@ -25,6 +25,22 @@ export const getHistory = async (userId = 1) => {
   return response.data;
 };
 
+export const downloadPDF = async (jobId) => {
+  const response = await axios.get(`${API_BASE}/api/reviews/download/${jobId}`, {
+    responseType: 'blob',
+  });
+
+  // Create download link
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement('a');
+  link.href = url;
+  link.setAttribute('download', `code-review-${jobId}.txt`);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+};
+
 // ============================================
 // DLQ ENDPOINTS
 // ============================================
@@ -107,6 +123,7 @@ export default {
   submitReview,
   getJobStatus,
   getHistory,
+  downloadPDF,
   getDLQMessages,
   getDLQStats,
   getDLQMessage,

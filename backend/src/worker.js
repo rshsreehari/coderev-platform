@@ -12,18 +12,23 @@ const MAX_RECEIVE = Number(process.env.SQS_MAX_RECEIVE_COUNT || 3);
 async function processJob() {
   const data = await receiveFromQueue();
 
-  if (!data.Messages || data.Messages.length === 0) return;
+  if (!data.Messages || data.Messages.length === 0) {
+    // Silently return if no messages (common during polling)
+    return;
+  }
 
+  console.log(`\n📨 Received message from queue:`, data.Messages.length, 'message(s)');
+  
   const message = data.Messages[0];
   const job = JSON.parse(message.Body);
 
   const receiveCount = Number(message.Attributes?.ApproximateReceiveCount || 1);
 
-  console.log(`\n Processing job ${job.jobId} (attempt ${receiveCount}/${MAX_RECEIVE})...`);
+  console.log(`\n🔄 Processing job ${job.jobId} (attempt ${receiveCount}/${MAX_RECEIVE})...`);
 
   // Check if message is at risk of going to DLQ
   if (receiveCount >= MAX_RECEIVE) {
-    console.warn(`  WARNING: Job ${job.jobId} is at max receive count (${receiveCount}/${MAX_RECEIVE})`);
+    console.warn(`  ⚠️ WARNING: Job ${job.jobId} is at max receive count (${receiveCount}/${MAX_RECEIVE})`);
     console.warn("   This message will be moved to DLQ if it fails");
   }
 
@@ -38,8 +43,10 @@ async function processJob() {
       ["processing", receiveCount, job.jobId]
     );
 
+    console.log(`📊 Starting code analysis...`);
     const result = await analyzeCode(job.fileContent, job.fileName);
 
+    console.log(`💾 Caching result...`);
     await setCachedReview(job.codeHash, result);
 
     await pool.query(
@@ -51,10 +58,11 @@ async function processJob() {
 
     await deleteFromQueue(message.ReceiptHandle);
 
-    console.log(`Job ${job.jobId} completed in ${result.metrics.processingTimeMs}ms`);
+    console.log(`✅ Job ${job.jobId} completed in ${result.metrics.processingTimeMs}ms`);
     console.log(`   Found ${result.metrics.issuesFound} issues`);
+    console.log(`   Security: ${result.security.length} | Performance: ${result.performance.length} | AI: ${result.aiSuggestions.length}`);
   } catch (error) {
-    console.error(` Error processing job ${job.jobId}:`, error.message || error);
+    console.error(`❌ Error processing job ${job.jobId}:`, error.message || error);
 
     if (receiveCount >= MAX_RECEIVE) {
       // Message will be moved to DLQ by SQS automatically
@@ -83,12 +91,19 @@ async function startWorker() {
   // Ensure queues exist and set main queue URL for worker too
   const { mainUrl } = await ensureQueuesExist();
   setQueueUrl(mainUrl);
+  console.log(`✅ Queue URL set: ${mainUrl}`);
 
+  let pollCount = 0;
   while (true) {
     try {
+      pollCount++;
+      if (pollCount % 10 === 0) {
+        console.log(`[${new Date().toISOString()}] Polling for jobs... (poll #${pollCount})`);
+      }
       await processJob();
+      await new Promise((r) => setTimeout(r, 1000)); // Poll every 1 second
     } catch (e) {
-      console.error("Worker loop error:", e);
+      console.error("Worker loop error:", e.message || e);
       await new Promise((r) => setTimeout(r, 2000));
     }
   }

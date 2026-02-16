@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronUp,
   RotateCw,
+  Download,
 } from 'lucide-react';
 import {
   submitReview,
@@ -24,6 +25,7 @@ import {
   resolveDLQMessage,
   getHealth,
   getStats,
+  downloadPDF,
 } from './services/api';
 import './index.css';
 
@@ -183,7 +185,7 @@ export default function CodeReviewPlatformWithDLQ() {
   // Poll job status
   const pollJobStatus = async (jobId) => {
     let attempts = 0;
-    const maxAttempts = 180; // 3 minutes with 1 second intervals
+    const maxAttempts = 60; // 30 seconds with 500ms intervals
 
     if (jobPollRef.current) clearInterval(jobPollRef.current);
 
@@ -194,7 +196,8 @@ export default function CodeReviewPlatformWithDLQ() {
         const data = await getJobStatus(jobId);
 
         if (data.status === 'complete') {
-          clearInterval(interval);
+          clearInterval(jobPollRef.current);
+          jobPollRef.current = null;
           setJobStatus('complete');
           // Map backend result fields to frontend expectations
           const mappedResult = {
@@ -207,29 +210,32 @@ export default function CodeReviewPlatformWithDLQ() {
           setStatusMessage('Review completed!');
           await fetchHistory();
         } else if (data.status === 'failed') {
-          clearInterval(interval);
+          clearInterval(jobPollRef.current);
+          jobPollRef.current = null;
           setJobStatus('error');
           setStatusMessage('Job failed - moved to DLQ');
           fetchDLQMessages();
         } else if (attempts >= maxAttempts) {
-          clearInterval(interval);
+          clearInterval(jobPollRef.current);
+          jobPollRef.current = null;
           setJobStatus('error');
-          setStatusMessage('Moved to DLQ');
+          setStatusMessage('Processing timeout - check DLQ');
         } else if (data.status === 'dlq') {
-            clearInterval(jobPollRef.current);
-            jobPollRef.current = null;
-            setJobStatus('dlq'); 
-            setStatusMessage('Moved to DLQ');
-            fetchDLQMessages();
+          clearInterval(jobPollRef.current);
+          jobPollRef.current = null;
+          setJobStatus('dlq'); 
+          setStatusMessage('Moved to DLQ');
+          fetchDLQMessages();
         } else {
-          setStatusMessage(`Processing... (${data.progress || 0}%)`);
+          setStatusMessage(`Processing... (attempt ${attempts}/${maxAttempts})`);
         }
       } catch (error) {
-        clearInterval(interval);
+        clearInterval(jobPollRef.current);
+        jobPollRef.current = null;
         setJobStatus('error');
         setStatusMessage(`Error: ${error.message}`);
       }
-    }, 1000);
+    }, 500);
   };
 
   // Handle retry DLQ message
@@ -554,6 +560,34 @@ export default function CodeReviewPlatformWithDLQ() {
           <div className="space-y-4">
             {jobResult ? (
               <div className="bg-slate-900 rounded-lg border border-slate-700 p-6 space-y-6">
+                {/* Header with Download Button */}
+                <div className="flex items-center justify-between pb-4 border-b border-slate-700">
+                  <div>
+                    <h2 className="text-xl font-bold text-white">Review Results</h2>
+                    <p className="text-sm text-gray-400 mt-1">
+                      Completed in {jobResult.metrics?.reviewTime || 'N/A'} • {jobResult.metrics?.linesAnalyzed || 0} lines analyzed
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {jobResult.cacheHit && (
+                      <span className="px-3 py-1 bg-green-900/30 border border-green-800/50 rounded-full text-xs text-green-400 font-medium">
+                        ⚡ Cache Hit
+                      </span>
+                    )}
+                    <button
+                      onClick={() => {
+                        if (currentJobId) {
+                          downloadPDF(currentJobId);
+                        }
+                      }}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center gap-2 text-sm font-medium transition duration-200 text-white"
+                    >
+                      <Download className="w-4 h-4" />
+                      Download Report
+                    </button>
+                  </div>
+                </div>
+
                 {/* Summary */}
                 <div className="grid grid-cols-3 gap-4">
                   <div className="bg-slate-800/50 rounded-lg p-4 border border-slate-700">
@@ -662,11 +696,48 @@ export default function CodeReviewPlatformWithDLQ() {
                 {jobResult.aiSuggestions && jobResult.aiSuggestions.length > 0 && (
                   <div>
                     <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
-                      <RefreshCw className="w-5 h-5 text-blue-400" />
-                      AI Suggestions ({jobResult.aiSuggestions.length})
+                      <RefreshCw className="w-5 h-5 text-purple-400" />
+                      🤖 AI Suggestions ({jobResult.aiSuggestions.length})
                     </h3>
                     <div className="space-y-2">
                       {jobResult.aiSuggestions.map((suggestion, idx) => (
+                        <div
+                          key={idx}
+                          className="bg-purple-900/20 border border-purple-800/30 rounded-lg p-4"
+                        >
+                          <div className="flex items-start justify-between mb-2">
+                            <div className="flex-1">
+                              <p className="text-purple-300 font-semibold">{suggestion.issue || 'AI Suggestion'}</p>
+                              <p className="text-xs text-purple-400 mt-1">Category: {suggestion.category || 'general'}</p>
+                            </div>
+                            <span className={`px-2 py-1 rounded text-xs font-semibold whitespace-nowrap ml-2 ${
+                              suggestion.severity === 'critical' ? 'bg-red-700 text-red-100' :
+                              suggestion.severity === 'high' ? 'bg-orange-700 text-orange-100' :
+                              suggestion.severity === 'medium' ? 'bg-yellow-700 text-yellow-100' :
+                              'bg-blue-700 text-blue-100'
+                            }`}>
+                              {suggestion.severity?.toUpperCase()}
+                            </span>
+                          </div>
+                          <p className="text-sm text-purple-400 mt-2"><strong>Issue:</strong> {suggestion.explanation || suggestion.message}</p>
+                          <p className="text-sm text-purple-300 mt-2"><strong>Fix:</strong> {suggestion.suggestion || 'See explanation'}</p>
+                          {suggestion.line && <p className="text-xs text-gray-500 mt-3">📍 Line {suggestion.line}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {/* Legacy AI Suggestions (for backward compatibility) */}
+                {jobResult.aiSuggestions && jobResult.aiSuggestions.length === 0 && 
+                 jobResult.type && jobResult.type === 'code-quality' && (
+                  <div>
+                    <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
+                      <RefreshCw className="w-5 h-5 text-blue-400" />
+                      Code Quality Suggestions
+                    </h3>
+                    <div className="space-y-2">
+                      {jobResult.map && jobResult.map((suggestion, idx) => (
                         <div
                           key={idx}
                           className="bg-blue-900/20 border border-blue-800/30 rounded-lg p-4"
