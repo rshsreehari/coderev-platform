@@ -263,6 +263,239 @@ function detectAsyncIssues(fileContent, fileName) {
   return issues;
 }
 
+// ==============================================
+// SEMANTIC ANALYSIS - Deep Logic Bug Detection
+// ==============================================
+function detectSemanticIssues(fileContent, fileName) {
+  const issues = [];
+  const lines = fileContent.split('\n');
+  const fullCode = fileContent;
+  
+  // ===== 1. EVENT LISTENER ISSUES =====
+  
+  // Event listener without try-catch (can crash entire system)
+  if (/\.on\s*\(\s*['"][^'"]+['"]\s*,/.test(fullCode) || /addEventListener/.test(fullCode)) {
+    // Check if callbacks have error handling
+    const listenerMatches = fullCode.matchAll(/\.on\s*\(\s*['"]([^'"]+)['"]\s*,\s*(?:async\s*)?\(?([^)]*)\)?\s*=>\s*\{?/g);
+    for (const match of listenerMatches) {
+      const idx = fullCode.substring(0, match.index).split('\n').length;
+      const afterMatch = fullCode.substring(match.index, match.index + 500);
+      if (!/try\s*\{|\.catch\s*\(/.test(afterMatch.substring(0, 200))) {
+        issues.push({
+          line: idx,
+          message: `Event listener '${match[1]}' has no error handling - unhandled error will crash the process`,
+          severity: 'critical',
+          rule: 'semantic/unprotected-listener',
+          suggestion: 'Wrap callback body in try-catch or add .catch() for async handlers to prevent crashes.',
+          category: 'reliability',
+        });
+      }
+    }
+    
+    // Event listener memory leak - no removeEventListener/off
+    if (/addEventListener|\.on\s*\(/.test(fullCode) && !/removeEventListener|\.off\s*\(|\.removeListener\s*\(/.test(fullCode)) {
+      issues.push({
+        line: 1,
+        message: 'Event listeners added but never removed - potential memory leak',
+        severity: 'high',
+        rule: 'semantic/listener-leak',
+        suggestion: 'Store listener references and call removeEventListener/off() in cleanup/destructor.',
+        category: 'memory-leak',
+      });
+    }
+  }
+  
+  // ===== 2. ASYNC LOOP RE-ENTRANCY =====
+  
+  // While loop with await - tasks added during await may be missed
+  if (/while\s*\([^)]+\.length|while\s*\([^)]+\)\s*\{[\s\S]*?await/.test(fullCode)) {
+    const whileMatch = fullCode.match(/while\s*\(([^)]+)\)/);
+    if (whileMatch) {
+      const lineNum = fullCode.substring(0, whileMatch.index).split('\n').length;
+      // Check if there's a lock/mutex pattern
+      if (!/running\s*=\s*true|locked\s*=\s*true|mutex|semaphore/i.test(fullCode)) {
+        issues.push({
+          line: lineNum,
+          message: 'Async while loop may miss items added during await (re-entrancy bug)',
+          severity: 'high',
+          rule: 'semantic/async-reentry',
+          suggestion: 'Use a proper job queue pattern or check queue state after each await completes.',
+          category: 'concurrency',
+        });
+      } else {
+        // Has lock but check if it's properly checked after await
+        const afterAwait = fullCode.match(/await[^;]+;([\s\S]{0,100})/);
+        if (afterAwait && !/\.length|queue\.|pending/.test(afterAwait[1])) {
+          issues.push({
+            line: lineNum,
+            message: 'Items added during await may not be processed - check queue state after await',
+            severity: 'medium',
+            rule: 'semantic/async-reentry-check',
+            suggestion: 'After await completes, re-check if new items were added: while(queue.length > 0)',
+            category: 'concurrency',
+          });
+        }
+      }
+    }
+  }
+  
+  // ===== 3. RETRY PATTERN ISSUES =====
+  
+  // Retry without delay (retry storm / self-DDoS)
+  if (/retries?\s*(\+\+|\+\s*=\s*1)|retries?\s*<\s*\d/.test(fullCode)) {
+    const hasDelay = /setTimeout|delay|sleep|backoff|wait/i.test(fullCode);
+    const hasExponential = /Math\.pow|exponential|\*\s*2|\*\s*retries/i.test(fullCode);
+    
+    if (!hasDelay) {
+      const retryLine = lines.findIndex(l => /retries?\s*(\+\+|\+\s*=)|retries?\s*</.test(l)) + 1;
+      issues.push({
+        line: retryLine || 1,
+        message: 'Retry loop without delay - can cause retry storm / self-DDoS',
+        severity: 'critical',
+        rule: 'semantic/retry-storm',
+        suggestion: 'Add exponential backoff: await delay(Math.pow(2, retries) * 100)',
+        category: 'reliability',
+      });
+    } else if (!hasExponential) {
+      const retryLine = lines.findIndex(l => /retries?\s*(\+\+|\+\s*=)|retries?\s*</.test(l)) + 1;
+      issues.push({
+        line: retryLine || 1,
+        message: 'Retry with fixed delay - exponential backoff recommended',
+        severity: 'medium',
+        rule: 'semantic/retry-no-backoff',
+        suggestion: 'Use exponential backoff: delay = baseDelay * Math.pow(2, retryAttempt)',
+        category: 'reliability',
+      });
+    }
+  }
+  
+  // Retry can starve other tasks (failing task pushed back, blocks queue)
+  if (/\.push\s*\(\s*item\s*\)|\.push\s*\(\s*\{[^}]*retries/.test(fullCode) && /while\s*\([^)]+\.length/.test(fullCode)) {
+    const pushLine = lines.findIndex(l => /\.push\s*\(.*(?:item|task|job)/.test(l)) + 1;
+    issues.push({
+      line: pushLine || 1,
+      message: 'Failed task re-queued immediately - can starve other waiting tasks',
+      severity: 'high',
+      rule: 'semantic/retry-starvation',
+      suggestion: 'Push failed tasks to end with delay, or use separate retry queue with lower priority.',
+      category: 'concurrency',
+    });
+  }
+  
+  // ===== 4. QUEUE/BUFFER UNBOUNDED GROWTH =====
+  
+  // Queue/array without size limit
+  if (/\.push\s*\(/.test(fullCode) && /queue|buffer|pending|tasks|items/i.test(fullCode)) {
+    const hasLimit = /\.length\s*[<>]\s*\d|MAX_|LIMIT|capacity|isFull/i.test(fullCode);
+    if (!hasLimit) {
+      const queueLine = lines.findIndex(l => /(?:queue|buffer|pending|tasks)\s*[=:]/.test(l.toLowerCase())) + 1;
+      issues.push({
+        line: queueLine || 1,
+        message: 'Queue/buffer grows without size limit - can cause memory exhaustion',
+        severity: 'high',
+        rule: 'semantic/unbounded-queue',
+        suggestion: 'Add max size check: if (queue.length >= MAX_SIZE) throw new Error("Queue full")',
+        category: 'memory-leak',
+      });
+    }
+  }
+  
+  // ===== 5. MISSING GRACEFUL SHUTDOWN =====
+  
+  // Long-running process without shutdown handling
+  if (/while\s*\(\s*true|setInterval|\.on\s*\(/.test(fullCode)) {
+    const hasShutdown = /SIGTERM|SIGINT|shutdown|cleanup|dispose|destroy|close\s*\(|stop\s*\(/i.test(fullCode);
+    if (!hasShutdown) {
+      issues.push({
+        line: 1,
+        message: 'Long-running process without graceful shutdown handling',
+        severity: 'medium',
+        rule: 'semantic/no-shutdown',
+        suggestion: 'Handle SIGTERM/SIGINT: process.on("SIGTERM", () => { cleanup(); process.exit(0); })',
+        category: 'reliability',
+      });
+    }
+  }
+  
+  // ===== 6. ERROR CONTEXT =====
+  
+  // Catch block without error context
+  if (/catch\s*\(\s*(\w+)\s*\)/.test(fullCode)) {
+    const catches = fullCode.matchAll(/catch\s*\(\s*(\w+)\s*\)\s*\{([^}]*)\}/g);
+    for (const match of catches) {
+      const errVar = match[1];
+      const catchBody = match[2];
+      // Check if error is logged with context
+      if (!new RegExp(`${errVar}\\.message|${errVar}\\.stack|JSON\\.stringify\\s*\\(\\s*${errVar}`).test(catchBody)) {
+        const lineNum = fullCode.substring(0, match.index).split('\n').length;
+        issues.push({
+          line: lineNum,
+          message: 'Error caught but stack/message not preserved - poor debugging context',
+          severity: 'low',
+          rule: 'semantic/error-context',
+          suggestion: `Log error details: console.error('Operation failed:', ${errVar}.message, ${errVar}.stack)`,
+          category: 'observability',
+        });
+      }
+    }
+  }
+  
+  // ===== 7. SHARED STATE MUTATION =====
+  
+  // Class with shared state modified in async methods
+  if (/class\s+\w+/.test(fullCode) && /this\.\w+\s*=/.test(fullCode) && /async\s+\w+\s*\(/.test(fullCode)) {
+    // Check for potential race conditions on instance state
+    const stateVars = [...fullCode.matchAll(/this\.(\w+)\s*=/g)].map(m => m[1]);
+    const uniqueStateVars = [...new Set(stateVars)];
+    
+    if (uniqueStateVars.length > 0 && !/mutex|lock|semaphore|synchronized/i.test(fullCode)) {
+      const asyncMethods = fullCode.match(/async\s+\w+/g) || [];
+      if (asyncMethods.length > 0) {
+        issues.push({
+          line: 1,
+          message: `Class has ${uniqueStateVars.length} mutable state vars (${uniqueStateVars.slice(0, 3).join(', ')}) accessed in async methods without synchronization`,
+          severity: 'medium',
+          rule: 'semantic/async-state-race',
+          suggestion: 'Use mutex pattern or atomic operations for shared state in concurrent code.',
+          category: 'concurrency',
+        });
+      }
+    }
+  }
+  
+  // ===== 8. CALLBACK HELL / PROMISE ANTI-PATTERNS =====
+  
+  // Nested callbacks without proper error propagation
+  const nestedCallbacks = (fullCode.match(/=>\s*\{[^}]*=>\s*\{[^}]*=>\s*\{/g) || []).length;
+  if (nestedCallbacks > 0) {
+    issues.push({
+      line: 1,
+      message: `${nestedCallbacks} deeply nested callbacks detected - hard to debug and error-prone`,
+      severity: 'medium',
+      rule: 'semantic/callback-hell',
+      suggestion: 'Refactor to async/await or extract nested logic into named functions.',
+      category: 'maintainability',
+    });
+  }
+  
+  // ===== 9. MATH.RANDOM FOR CRITICAL DECISIONS =====
+  
+  // Using Math.random in retry/backoff logic (not cryptographically secure issue, but non-deterministic testing)
+  if (/Math\.random\s*\(\)/.test(fullCode) && /retry|backoff|delay|test|spec/i.test(fullCode)) {
+    const randomLine = lines.findIndex(l => /Math\.random\s*\(\)/.test(l)) + 1;
+    issues.push({
+      line: randomLine,
+      message: 'Math.random() makes behavior non-deterministic - hard to test and debug',
+      severity: 'low',
+      rule: 'semantic/nondeterministic',
+      suggestion: 'Inject random function as dependency for testability, or seed for reproducibility.',
+      category: 'testability',
+    });
+  }
+  
+  return issues;
+}
+
 // Helper function to provide fix suggestions
 function getFixSuggestion(ruleId) {
   const suggestions = {
@@ -522,7 +755,23 @@ async function analyzeCode(fileContent, fileName) {
     });
 
     // ============================================
-    // STAGE 1c: Static Analysis (ESLint)
+    // STAGE 1c: Semantic/Logic Bug Detection
+    // ============================================
+    const semanticIssues = detectSemanticIssues(fileContent, fileName);
+    
+    // Merge semantic issues into appropriate categories
+    semanticIssues.forEach(issue => {
+      if (issue.category === 'reliability' || issue.category === 'concurrency') {
+        patternIssues.security.push(issue); // Critical logic bugs go to security
+      } else if (issue.category === 'memory-leak' || issue.category === 'observability' || issue.category === 'testability') {
+        patternIssues.performance.push(issue);
+      } else {
+        patternIssues.style.push(issue);
+      }
+    });
+
+    // ============================================
+    // STAGE 1d: Static Analysis (ESLint)
     // ============================================
 
     const eslint = new ESLint({

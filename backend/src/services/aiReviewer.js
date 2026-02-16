@@ -20,6 +20,11 @@ const AI_PROVIDERS = {
     path: '/v1/messages',
     defaultModel: 'claude-3-5-sonnet-20241022',
   },
+  gemini: {
+    hostname: 'generativelanguage.googleapis.com',
+    path: '/v1beta/models/{model}:generateContent',
+    defaultModel: 'gemini-2.0-flash',
+  },
 };
 
 // Get provider config from environment
@@ -230,16 +235,33 @@ function makeAIRequest(payload) {
     // Get provider config
     const provider = AI_PROVIDERS[AI_PROVIDER] || AI_PROVIDERS.openai;
 
+    // Build path - Gemini requires model in URL
+    let requestPath = provider.path;
+    if (AI_PROVIDER === 'gemini') {
+      requestPath = provider.path.replace('{model}', AI_MODEL) + `?key=${process.env.AI_API_KEY}`;
+    }
+
     const options = {
       hostname: provider.hostname,
       port: 443,
-      path: provider.path,
+      path: requestPath,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.AI_API_KEY}`,
       },
     };
+
+    // Add Authorization header for non-Gemini providers (Gemini uses query param)
+    if (AI_PROVIDER !== 'gemini') {
+      options.headers['Authorization'] = `Bearer ${process.env.AI_API_KEY}`;
+    }
+    
+    // Anthropic requires special headers
+    if (AI_PROVIDER === 'anthropic') {
+      options.headers['x-api-key'] = process.env.AI_API_KEY;
+      options.headers['anthropic-version'] = '2023-06-01';
+      delete options.headers['Authorization'];
+    }
 
     const req = https.request(options, (res) => {
       let data = '';
@@ -316,26 +338,90 @@ async function reviewCodeWithAI(fileName, fileContent, staticIssues = []) {
   const prompt = promptParts.join('');
 
   try {
-    const payload = {
-      model: AI_MODEL, // ✅ Configurable model
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        ...EXAMPLES,
-        { role: 'user', content: prompt },
-      ],
-      temperature: 0.3,
-      max_tokens: 2000,
-      response_format: { type: 'json_object' },
-    };
+    let payload;
+    
+    // Build provider-specific payload
+    if (AI_PROVIDER === 'gemini') {
+      // Gemini API format
+      payload = {
+        contents: [
+          {
+            parts: [
+              { text: SYSTEM_PROMPT + '\n\n' + prompt }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.3,
+          maxOutputTokens: 2000,
+          responseMimeType: 'application/json',
+        },
+      };
+    } else if (AI_PROVIDER === 'anthropic') {
+      // Anthropic/Claude format
+      payload = {
+        model: AI_MODEL,
+        system: SYSTEM_PROMPT,
+        messages: [
+          ...EXAMPLES,
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.3,
+        max_tokens: 2000,
+      };
+    } else {
+      // OpenAI/Mistral format
+      payload = {
+        model: AI_MODEL,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          ...EXAMPLES,
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.3,
+        max_tokens: 2000,
+        response_format: { type: 'json_object' },
+      };
+    }
 
     console.log(`🤖 Calling ${AI_PROVIDER} API (model: ${AI_MODEL})...`);
     const response = await makeAIRequest(payload);
 
-    if (response.choices && response.choices[0] && response.choices[0].message) {
+    // Parse response based on provider
+    let aiContent;
+    if (AI_PROVIDER === 'gemini') {
+      // Gemini response format
+      if (response.candidates && response.candidates[0] && response.candidates[0].content) {
+        aiContent = response.candidates[0].content.parts[0].text;
+      }
+    } else if (AI_PROVIDER === 'anthropic') {
+      // Anthropic response format
+      if (response.content && response.content[0]) {
+        aiContent = response.content[0].text;
+      }
+    } else {
+      // OpenAI/Mistral response format
+      if (response.choices && response.choices[0] && response.choices[0].message) {
+        aiContent = response.choices[0].message.content;
+      }
+    }
+
+    if (aiContent) {
       // ✅ Parse and validate AI response
       let parsed;
       try {
-        parsed = JSON.parse(response.choices[0].message.content);
+        // Clean response - remove markdown code blocks if present
+        let cleanContent = aiContent.trim();
+        if (cleanContent.startsWith('```json')) {
+          cleanContent = cleanContent.slice(7);
+        }
+        if (cleanContent.startsWith('```')) {
+          cleanContent = cleanContent.slice(3);
+        }
+        if (cleanContent.endsWith('```')) {
+          cleanContent = cleanContent.slice(0, -3);
+        }
+        parsed = JSON.parse(cleanContent.trim());
       } catch (parseError) {
         console.error('❌ Failed to parse AI response JSON:', parseError.message);
         return [];
