@@ -189,8 +189,16 @@ export default function CodeReviewPlatformWithDLQ() {
 
     if (jobPollRef.current) clearInterval(jobPollRef.current);
 
+    // Immediately refresh stats so queue depth / active workers update
+    fetchSystemHealth();
+
     jobPollRef.current = setInterval(async () => {
       attempts++;
+
+      // Refresh stats on every other poll so dashboard stays live
+      if (attempts % 2 === 0) {
+        fetchSystemHealth();
+      }
 
       try {
         const data = await getJobStatus(jobId);
@@ -208,23 +216,27 @@ export default function CodeReviewPlatformWithDLQ() {
           };
           setJobResult(mappedResult);
           setStatusMessage('Review completed!');
+          fetchSystemHealth();
           await fetchHistory();
         } else if (data.status === 'failed') {
           clearInterval(jobPollRef.current);
           jobPollRef.current = null;
           setJobStatus('error');
           setStatusMessage('Job failed - moved to DLQ');
+          fetchSystemHealth();
           fetchDLQMessages();
         } else if (attempts >= maxAttempts) {
           clearInterval(jobPollRef.current);
           jobPollRef.current = null;
           setJobStatus('error');
           setStatusMessage('Processing timeout - check DLQ');
+          fetchSystemHealth();
         } else if (data.status === 'dlq') {
           clearInterval(jobPollRef.current);
           jobPollRef.current = null;
           setJobStatus('dlq'); 
           setStatusMessage('Moved to DLQ');
+          fetchSystemHealth();
           fetchDLQMessages();
         } else {
           setStatusMessage(`Processing... ( ${attempts}/${maxAttempts})`);

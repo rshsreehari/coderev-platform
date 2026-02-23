@@ -9,6 +9,7 @@ const { ensureQueuesExist } = require('./config/queue');
 const { setQueueUrl } = require("./services/queue");
 const { setDLQUrl } = require("./services/dlq");
 const { getCacheStats } = require('./services/cache');
+const pool = require('./config/database');
 
 const app = express();
 
@@ -54,27 +55,39 @@ app.use('/api/dlq', require('./routes/dlq'));
 app.get('/api/stats', async (req, res) => {
   const cacheStats = await getCacheStats();
   
-  // Get queue depth from SQS
+  // Use database as source of truth for queue depth and active workers.
+  // SQS ApproximateNumberOfMessages is delayed and often returns 0 even
+  // when messages are in flight, because the worker picks them up within
+  // 1-2 seconds. The database status column is updated in real-time by
+  // the controller (queued) and worker (processing/complete).
   let queueDepth = 0;
   let activeWorkers = 0;
+  let totalReviews = 0;
+  let completedReviews = 0;
+  let failedReviews = 0;
+  let avgProcessingTime = 0;
   
   try {
-    const { sqs } = require('./config/queue');
-    const { getQueueUrl } = require('./services/queue');
-    const queueUrl = getQueueUrl();
+    const result = await pool.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE status = 'queued') AS queued,
+        COUNT(*) FILTER (WHERE status = 'processing') AS processing,
+        COUNT(*) FILTER (WHERE status = 'complete') AS completed,
+        COUNT(*) FILTER (WHERE status = 'failed' OR status = 'retrying') AS failed,
+        COUNT(*) AS total,
+        COALESCE(AVG(processing_time_ms) FILTER (WHERE status = 'complete' AND processing_time_ms > 0), 0) AS avg_time
+      FROM review_jobs
+    `);
     
-    if (queueUrl) {
-      const attrs = await sqs.getQueueAttributes({
-        QueueUrl: queueUrl,
-        AttributeNames: ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']
-      }).promise();
-      
-      queueDepth = parseInt(attrs.Attributes.ApproximateNumberOfMessages || '0', 10);
-      // Messages not visible = being processed by workers
-      activeWorkers = parseInt(attrs.Attributes.ApproximateNumberOfMessagesNotVisible || '0', 10);
-    }
+    const row = result.rows[0];
+    queueDepth = parseInt(row.queued || '0', 10);
+    activeWorkers = parseInt(row.processing || '0', 10);
+    totalReviews = parseInt(row.total || '0', 10);
+    completedReviews = parseInt(row.completed || '0', 10);
+    failedReviews = parseInt(row.failed || '0', 10);
+    avgProcessingTime = Math.round(parseFloat(row.avg_time || '0'));
   } catch (error) {
-    console.error('Error fetching queue stats:', error.message);
+    console.error('Error fetching DB stats:', error.message);
   }
   
   res.json({
@@ -83,6 +96,10 @@ app.get('/api/stats', async (req, res) => {
     cacheHitRate: `${cacheStats.hitRate}%`,
     queueDepth,
     activeWorkers,
+    totalReviews,
+    completedReviews,
+    failedReviews,
+    avgProcessingTime,
   });
 });
 
