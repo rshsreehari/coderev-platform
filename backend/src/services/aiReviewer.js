@@ -46,7 +46,7 @@ function validateApiKey() {
   }
   // Log masked key for debugging (never full key)
   const maskedKey = process.env.AI_API_KEY.substring(0, 7) + '...' + process.env.AI_API_KEY.slice(-4);
-  console.log(`✅ AI API key validated: ${maskedKey}`);
+  console.log(`  AI API key validated: ${maskedKey}`);
   return true;
 }
 
@@ -296,7 +296,7 @@ function makeAIRequest(payload) {
       });
     });
 
-    // ✅ REQUEST TIMEOUT - Prevents hanging connections
+    //   REQUEST TIMEOUT - Prevents hanging connections
     req.setTimeout(REQUEST_TIMEOUT_MS, () => {
       req.destroy();
       reject(new AIReviewError(
@@ -319,13 +319,13 @@ function makeAIRequest(payload) {
 }
 
 async function reviewCodeWithAI(fileName, fileContent, staticIssues = []) {
-  // ✅ Check if API key is valid before making request
+  //   Check if API key is valid before making request
   if (!IS_AI_KEY_VALID) {
     console.log('⏭️ AI review skipped (API key not configured)');
     return [];
   }
 
-  // ✅ Build prompt using array.join() for efficiency (not string +=)
+  //   Build prompt using array.join() for efficiency (not string +=)
   const language = getFileLanguage(fileName);
   const lineCount = fileContent.split('\n').length;
 
@@ -407,7 +407,7 @@ async function reviewCodeWithAI(fileName, fileContent, staticIssues = []) {
     }
 
     if (aiContent) {
-      // ✅ Parse and validate AI response
+      //   Parse and validate AI response
       let parsed;
       try {
         // Clean response - remove markdown code blocks if present
@@ -423,25 +423,25 @@ async function reviewCodeWithAI(fileName, fileContent, staticIssues = []) {
         }
         parsed = JSON.parse(cleanContent.trim());
       } catch (parseError) {
-        console.error('❌ Failed to parse AI response JSON:', parseError.message);
+        console.error('  Failed to parse AI response JSON:', parseError.message);
         return [];
       }
 
-      // ✅ Validate response schema
+      //   Validate response schema
       const validation = validateAIResponse(parsed);
       if (!validation.valid) {
         console.warn('⚠️ Some AI suggestions were invalid:', validation.errors);
       }
 
-      console.log(`✅ AI returned ${validation.suggestions.length} valid suggestions`);
+      console.log(`  AI returned ${validation.suggestions.length} valid suggestions`);
       return validation.suggestions;
     } else {
-      console.error('❌ Unexpected API response format');
+      console.error('  Unexpected API response format');
       return [];
     }
   } catch (error) {
-    // ✅ Structured error logging with context
-    console.error('❌ AI review failed:', {
+    //   Structured error logging with context
+    console.error('  AI review failed:', {
       code: error.code || 'UNKNOWN',
       message: error.message,
       fileName,

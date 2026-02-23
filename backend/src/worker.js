@@ -1,4 +1,6 @@
-require("dotenv").config({ path: ".env.local" });
+// Load environment: .env.production for AWS, .env.local for dev
+const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.local';
+require("dotenv").config({ path: envFile });
 
 const pool = require("./config/database");
 const { ensureQueuesExist } = require("./config/queue");
@@ -17,18 +19,18 @@ async function processJob() {
     return;
   }
 
-  console.log(`\n📨 Received message from queue:`, data.Messages.length, 'message(s)');
+  console.log(`\nReceived message from queue:`, data.Messages.length, 'message(s)');
   
   const message = data.Messages[0];
   const job = JSON.parse(message.Body);
 
   const receiveCount = Number(message.Attributes?.ApproximateReceiveCount || 1);
 
-  console.log(`\n🔄 Processing job ${job.jobId} (attempt ${receiveCount}/${MAX_RECEIVE})...`);
+  console.log(`\nProcessing job ${job.jobId} (attempt ${receiveCount}/${MAX_RECEIVE})...`);
 
   // Check if message is at risk of going to DLQ
   if (receiveCount >= MAX_RECEIVE) {
-    console.warn(`  ⚠️ WARNING: Job ${job.jobId} is at max receive count (${receiveCount}/${MAX_RECEIVE})`);
+    console.warn(`  WARNING: Job ${job.jobId} is at max receive count (${receiveCount}/${MAX_RECEIVE})`);
     console.warn("   This message will be moved to DLQ if it fails");
   }
 
@@ -43,10 +45,10 @@ async function processJob() {
       ["processing", receiveCount, job.jobId]
     );
 
-    console.log(`📊 Starting code analysis...`);
+    console.log(`Starting code analysis...`);
     const result = await analyzeCode(job.fileContent, job.fileName);
 
-    console.log(`💾 Caching result...`);
+    console.log(`Caching result...`);
     await setCachedReview(job.codeHash, result);
 
     await pool.query(
@@ -58,11 +60,11 @@ async function processJob() {
 
     await deleteFromQueue(message.ReceiptHandle);
 
-    console.log(`✅ Job ${job.jobId} completed in ${result.metrics.processingTimeMs}ms`);
+    console.log(`Job ${job.jobId} completed in ${result.metrics.processingTimeMs}ms`);
     console.log(`   Found ${result.metrics.issuesFound} issues`);
     console.log(`   Security: ${result.security.length} | Performance: ${result.performance.length} | AI: ${result.aiSuggestions.length}`);
   } catch (error) {
-    console.error(`❌ Error processing job ${job.jobId}:`, error.message || error);
+    console.error(`Error processing job ${job.jobId}:`, error.message || error);
 
     if (receiveCount >= MAX_RECEIVE) {
       // Message will be moved to DLQ by SQS automatically
@@ -91,7 +93,7 @@ async function startWorker() {
   // Ensure queues exist and set main queue URL for worker too
   const { mainUrl } = await ensureQueuesExist();
   setQueueUrl(mainUrl);
-  console.log(`✅ Queue URL set: ${mainUrl}`);
+  console.log(`Queue URL set: ${mainUrl}`);
 
   let pollCount = 0;
   while (true) {

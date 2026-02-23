@@ -6,7 +6,10 @@
     "dev": "nodemon --env-file=.env.local src/index.js",
     "worker": "nodemon --env-file=.env.local src/worker.js",
     "dlq-monitor": "nodemon --env-file=.env.local src/dlq-monitor.js",
-    "start": "node src/index.js"
+    "start": "NODE_ENV=production node src/index.js",
+    "start:worker": "NODE_ENV=production node src/worker.js",
+    "start:dlq": "NODE_ENV=production node src/dlq-monitor.js",
+    "start:all": "NODE_ENV=production pm2 start ecosystem.config.js"
   },
   "keywords": [],
   "author": "",

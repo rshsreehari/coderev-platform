@@ -1,16 +1,30 @@
 const AWS = require("aws-sdk");
 
-// Use SQS_ENDPOINT for LocalStack. On AWS leave it empty.
+// Use SQS_ENDPOINT for LocalStack. On real AWS, leave it empty.
 const SQS_ENDPOINT = process.env.SQS_ENDPOINT || process.env.AWS_ENDPOINT || "";
 const IS_LOCAL = !!SQS_ENDPOINT && SQS_ENDPOINT.includes("localhost");
+const isProduction = process.env.NODE_ENV === "production";
 
-const sqs = new AWS.SQS({
-  region: process.env.AWS_REGION || "us-east-1",
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID || "test",
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "test",
-  ...(SQS_ENDPOINT ? { endpoint: SQS_ENDPOINT } : {}),
-  ...(IS_LOCAL ? { sslEnabled: false } : {}),
-});
+const sqsConfig = {
+  region: process.env.AWS_REGION || "us-west-2",
+};
+
+if (IS_LOCAL) {
+  // LocalStack mode — use dummy credentials
+  sqsConfig.accessKeyId = process.env.AWS_ACCESS_KEY_ID || "test";
+  sqsConfig.secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY || "test";
+  sqsConfig.endpoint = SQS_ENDPOINT;
+  sqsConfig.sslEnabled = false;
+} else if (!isProduction) {
+  // Local dev without LocalStack — still need some credentials
+  sqsConfig.accessKeyId = process.env.AWS_ACCESS_KEY_ID || "test";
+  sqsConfig.secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY || "test";
+}
+// On production EC2 with IAM role or env credentials, AWS SDK picks them up automatically
+
+const sqs = new AWS.SQS(sqsConfig);
+
+console.log(`SQS configured: ${IS_LOCAL ? "LocalStack" : isProduction ? "AWS Production" : "AWS Dev"}`);
 
 async function getOrCreateQueue(queueName, attributes = {}) {
   try {

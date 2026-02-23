@@ -51,6 +51,305 @@ const PATTERNS = {
 };
 
 // ==============================================
+// MULTI-LANGUAGE DETECTION (Java, Python, etc.)
+// ==============================================
+function detectLanguage(fileName, fileContent) {
+  const ext = path.extname(fileName).toLowerCase();
+  if (ext === '.java') return 'java';
+  if (ext === '.py') return 'python';
+  if (ext === '.go') return 'go';
+  if (ext === '.rb') return 'ruby';
+  if (ext === '.php') return 'php';
+  if (ext === '.cs') return 'csharp';
+  if (ext === '.cpp' || ext === '.c' || ext === '.h') return 'cpp';
+  if (ext === '.ts' || ext === '.tsx') return 'typescript';
+  if (ext === '.js' || ext === '.jsx') return 'javascript';
+  // Detect by content
+  if (/public\s+class\s+\w+|import\s+java\./.test(fileContent)) return 'java';
+  if (/^import\s+\w+|^from\s+\w+\s+import|def\s+\w+\s*\(/.test(fileContent)) return 'python';
+  return 'javascript'; // default
+}
+
+// ==============================================
+// JAVA-SPECIFIC SECURITY DETECTION
+// ==============================================
+function detectJavaIssues(fileContent, fileName) {
+  const issues = [];
+  const lines = fileContent.split('\n');
+  
+  lines.forEach((line, index) => {
+    const lineNum = index + 1;
+    
+    // 1. SQL INJECTION (Java-specific with proper suggestion)
+    if (/executeQuery\s*\(|executeUpdate\s*\(|prepareStatement\s*\(/.test(line) && 
+        /"\s*\+\s*\w+|'\s*\+\s*\w+/.test(line)) {
+      issues.push({
+        line: lineNum,
+        message: 'SQL Injection: String concatenation in SQL query',
+        severity: 'critical',
+        rule: 'java/sql-injection',
+        suggestion: 'Use PreparedStatement with parameterized queries:\nPreparedStatement ps = conn.prepareStatement("SELECT * FROM users WHERE id = ?");\nps.setString(1, userId);',
+        category: 'security',
+      });
+    }
+    
+    // 2. HARDCODED CREDENTIALS
+    if (/(?:password|passwd|pwd|secret|apikey|api_key)\s*=\s*["'][^"']{4,}["']/i.test(line) ||
+        /getConnection\s*\([^)]*["'][^"']+["']\s*,\s*["'][^"']+["']\s*,\s*["'][^"']+["']/.test(line)) {
+      issues.push({
+        line: lineNum,
+        message: 'Hardcoded credentials detected - security risk',
+        severity: 'critical',
+        rule: 'java/hardcoded-credentials',
+        suggestion: 'Use environment variables or secure vault:\nString password = System.getenv("DB_PASSWORD");',
+        category: 'security',
+      });
+    }
+    
+    // 3. WEAK CRYPTOGRAPHY (MD5, SHA1)
+    if (/MessageDigest\.getInstance\s*\(\s*["'](?:MD5|SHA-?1)["']\)/i.test(line)) {
+      const algo = line.match(/["'](MD5|SHA-?1)["']/i)?.[1] || 'MD5';
+      issues.push({
+        line: lineNum,
+        message: `Weak cryptographic hash (${algo}) - vulnerable to collision attacks`,
+        severity: 'critical',
+        rule: 'java/weak-crypto',
+        suggestion: 'Use SHA-256 or stronger:\nMessageDigest md = MessageDigest.getInstance("SHA-256");\nOr use bcrypt/scrypt for passwords.',
+        category: 'security',
+      });
+    }
+    
+    // 4. COMMAND INJECTION (Runtime.exec)
+    if (/Runtime\.getRuntime\(\)\.exec\s*\(/.test(line) && /\+\s*\w+|\+\s*args/.test(line)) {
+      issues.push({
+        line: lineNum,
+        message: 'Command Injection: User input passed to Runtime.exec()',
+        severity: 'critical',
+        rule: 'java/command-injection',
+        suggestion: 'Use ProcessBuilder with argument array and validate/sanitize all inputs:\nProcessBuilder pb = new ProcessBuilder("cmd", sanitizedArg);\nNever concatenate user input into commands.',
+        category: 'security',
+      });
+    }
+    
+    // 5. UNSAFE DESERIALIZATION
+    if (/ObjectInputStream|readObject\s*\(/.test(line)) {
+      issues.push({
+        line: lineNum,
+        message: 'Unsafe deserialization - can lead to Remote Code Execution (RCE)',
+        severity: 'critical',
+        rule: 'java/unsafe-deserialization',
+        suggestion: 'Avoid ObjectInputStream with untrusted data. Use JSON/XML with schema validation, or implement ObjectInputFilter:\nObjectInputFilter filter = ObjectInputFilter.Config.createFilter("!*");',
+        category: 'security',
+      });
+    }
+    
+    // 6. RESOURCE LEAK (Connection/Stream not closed)
+    if (/(?:Connection|Statement|ResultSet|InputStream|OutputStream|Reader|Writer)\s+\w+\s*=/.test(line)) {
+      // Check if try-with-resources or close() is present
+      const varMatch = line.match(/(?:Connection|Statement|ResultSet|InputStream|OutputStream|Reader|Writer)\s+(\w+)\s*=/);
+      if (varMatch) {
+        const varName = varMatch[1];
+        const restOfCode = lines.slice(index).join('\n');
+        const hasTryWithResources = /try\s*\([^)]*\w+\s*=/.test(lines.slice(Math.max(0, index - 5), index + 1).join('\n'));
+        const hasClose = new RegExp(`${varName}\\.close\\s*\\(`).test(restOfCode);
+        const hasFinally = /finally\s*\{/.test(restOfCode.substring(0, 500));
+        
+        if (!hasTryWithResources && !hasClose && !hasFinally) {
+          issues.push({
+            line: lineNum,
+            message: `Resource leak: ${varMatch[0].split('=')[0].trim()} may not be closed`,
+            severity: 'high',
+            rule: 'java/resource-leak',
+            suggestion: 'Use try-with-resources for auto-closing:\ntry (Connection conn = DriverManager.getConnection(...)) {\n    // use connection\n} // auto-closed',
+            category: 'reliability',
+          });
+        }
+      }
+    }
+    
+    // 7. EMPTY CATCH BLOCK (Swallowed exception)
+    if (/catch\s*\([^)]+\)\s*\{\s*\}/.test(line) || 
+        (/catch\s*\([^)]+\)\s*\{/.test(line) && lines[index + 1]?.trim() === '}')) {
+      issues.push({
+        line: lineNum,
+        message: 'Empty catch block swallows exception - hides errors',
+        severity: 'high',
+        rule: 'java/empty-catch',
+        suggestion: 'At minimum, log the exception:\ncatch (Exception e) {\n    logger.error("Operation failed", e);\n    throw new RuntimeException("Operation failed", e);\n}',
+        category: 'reliability',
+      });
+    }
+    
+    // 8. THREAD EXPLOSION (creating threads in loop)
+    if (/new\s+Thread\s*\(/.test(line)) {
+      // Check if inside a loop
+      const context = lines.slice(Math.max(0, index - 10), index).join('\n');
+      if (/for\s*\(|while\s*\(/.test(context)) {
+        issues.push({
+          line: lineNum,
+          message: 'Thread explosion: Creating threads in a loop can cause DoS',
+          severity: 'critical',
+          rule: 'java/thread-explosion',
+          suggestion: 'Use ExecutorService with bounded thread pool:\nExecutorService executor = Executors.newFixedThreadPool(10);\nexecutor.submit(() -> { /* task */ });',
+          category: 'performance',
+        });
+      }
+    }
+    
+    // 9. PATH TRAVERSAL
+    if (/new\s+File\s*\(|new\s+FileInputStream\s*\(|new\s+FileOutputStream\s*\(/.test(line) && 
+        /\+\s*\w+|args\[/.test(line)) {
+      issues.push({
+        line: lineNum,
+        message: 'Path Traversal: User input used in file path',
+        severity: 'high',
+        rule: 'java/path-traversal',
+        suggestion: 'Validate and canonicalize paths:\nFile file = new File(basePath, userInput).getCanonicalFile();\nif (!file.toPath().startsWith(basePath)) throw new SecurityException();',
+        category: 'security',
+      });
+    }
+    
+    // 10. XXE (XML External Entity)
+    if (/DocumentBuilderFactory|SAXParserFactory|XMLInputFactory/.test(line)) {
+      const context = lines.slice(index, Math.min(lines.length, index + 10)).join('\n');
+      if (!/setFeature.*disallow-doctype-decl|setFeature.*external-general-entities.*false/.test(context)) {
+        issues.push({
+          line: lineNum,
+          message: 'Potential XXE vulnerability: XML parser without secure configuration',
+          severity: 'high',
+          rule: 'java/xxe',
+          suggestion: 'Disable external entities:\nfactory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);\nfactory.setFeature("http://xml.org/sax/features/external-general-entities", false);',
+          category: 'security',
+        });
+      }
+    }
+    
+    // 11. INSECURE RANDOM
+    if (/new\s+Random\s*\(|Math\.random\s*\(/.test(line)) {
+      const context = lines.slice(Math.max(0, index - 5), index + 5).join('\n');
+      if (/token|password|secret|key|session|auth|crypt/i.test(context)) {
+        issues.push({
+          line: lineNum,
+          message: 'Insecure random number generator used for security-sensitive operation',
+          severity: 'high',
+          rule: 'java/insecure-random',
+          suggestion: 'Use SecureRandom for security-sensitive values:\nSecureRandom random = new SecureRandom();\nbyte[] bytes = new byte[32];\nrandom.nextBytes(bytes);',
+          category: 'security',
+        });
+      }
+    }
+    
+    // 12. NULL POINTER DEREFERENCE
+    if (/\.getString\s*\(|\.getObject\s*\(|\.next\s*\(/.test(line)) {
+      const context = lines.slice(index, Math.min(lines.length, index + 3)).join('\n');
+      if (!/if\s*\(\s*\w+\s*!=\s*null|!=\s*null\s*&&|Optional/.test(context) && /\.\w+\s*\(/.test(context)) {
+        // Check if return value is used without null check
+        if (/\w+\s*\.\s*\w+\s*\(/.test(lines[index + 1] || '')) {
+          issues.push({
+            line: lineNum,
+            message: 'Potential NullPointerException: Return value used without null check',
+            severity: 'medium',
+            rule: 'java/null-pointer',
+            suggestion: 'Check for null before using:\nString value = rs.getString(1);\nif (value != null) { /* use value */ }\nOr use Optional: Optional.ofNullable(value).ifPresent(...)',
+            category: 'reliability',
+          });
+        }
+      }
+    }
+  });
+  
+  // Check for missing HTTPS/SSL verification (file-level)
+  if (/HttpURLConnection|HttpClient|URL\s*\(/.test(fileContent) && 
+      !/setHostnameVerifier|SSLContext|TrustManager/.test(fileContent) &&
+      /http:\/\//.test(fileContent)) {
+    issues.push({
+      line: 1,
+      message: 'Insecure HTTP connection without SSL/TLS',
+      severity: 'high',
+      rule: 'java/insecure-http',
+      suggestion: 'Use HTTPS and verify certificates:\nHttpsURLConnection conn = (HttpsURLConnection) url.openConnection();',
+      category: 'security',
+    });
+  }
+  
+  return issues;
+}
+
+// ==============================================
+// PYTHON-SPECIFIC SECURITY DETECTION
+// ==============================================
+function detectPythonIssues(fileContent, fileName) {
+  const issues = [];
+  const lines = fileContent.split('\n');
+  
+  lines.forEach((line, index) => {
+    const lineNum = index + 1;
+    
+    // 1. SQL Injection
+    if (/execute\s*\(|executemany\s*\(|raw\s*\(/.test(line) && /%s|%d|\+\s*\w+|\.format\s*\(|f["']/.test(line)) {
+      issues.push({
+        line: lineNum,
+        message: 'SQL Injection: String formatting in SQL query',
+        severity: 'critical',
+        rule: 'python/sql-injection',
+        suggestion: 'Use parameterized queries:\ncursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))',
+        category: 'security',
+      });
+    }
+    
+    // 2. Command Injection
+    if (/os\.system\s*\(|subprocess\.call\s*\(.*shell\s*=\s*True|subprocess\.Popen\s*\(.*shell\s*=\s*True/.test(line)) {
+      issues.push({
+        line: lineNum,
+        message: 'Command Injection: Shell command with potential user input',
+        severity: 'critical',
+        rule: 'python/command-injection',
+        suggestion: 'Use subprocess with shell=False and argument list:\nsubprocess.run(["ls", "-la", path], shell=False)',
+        category: 'security',
+      });
+    }
+    
+    // 3. Pickle deserialization
+    if (/pickle\.load|pickle\.loads|cPickle\.load/.test(line)) {
+      issues.push({
+        line: lineNum,
+        message: 'Unsafe deserialization: pickle can execute arbitrary code',
+        severity: 'critical',
+        rule: 'python/unsafe-pickle',
+        suggestion: 'Use JSON for untrusted data, or use hmac to verify pickle integrity',
+        category: 'security',
+      });
+    }
+    
+    // 4. Hardcoded secrets
+    if (/(?:password|secret|api_key|token)\s*=\s*["'][^"']{4,}["']/i.test(line)) {
+      issues.push({
+        line: lineNum,
+        message: 'Hardcoded credential detected',
+        severity: 'critical',
+        rule: 'python/hardcoded-secret',
+        suggestion: 'Use environment variables: os.environ.get("API_KEY")',
+        category: 'security',
+      });
+    }
+    
+    // 5. eval() usage
+    if (/\beval\s*\(/.test(line)) {
+      issues.push({
+        line: lineNum,
+        message: 'eval() executes arbitrary code - severe security risk',
+        severity: 'critical',
+        rule: 'python/eval',
+        suggestion: 'Use ast.literal_eval() for data parsing, or avoid eval entirely',
+        category: 'security',
+      });
+    }
+  });
+  
+  return issues;
+}
+
+// ==============================================
 // ASYNC/CONCURRENCY BUG PATTERNS
 // ==============================================
 const ASYNC_PATTERNS = {
@@ -646,6 +945,321 @@ function detectSemanticIssues(fileContent, fileName) {
   return issues;
 }
 
+// ==============================================
+// AUTH-SPECIFIC SEMANTIC DETECTORS
+// Catches refresh logic bugs, promise liveness, thundering herd
+// ==============================================
+function detectAuthIssues(fileContent, fileName) {
+  const issues = [];
+  const lines = fileContent.split('\n');
+  const fullCode = fileContent;
+  
+  // Detect if this is auth-related code
+  const isAuthCode = /refresh|token|auth|login|logout|session|credentials|bearer/i.test(fullCode);
+  if (!isAuthCode) {
+    return issues;
+  }
+  
+  // ===============================================
+  // 1. PROMISE LIVENESS & RESOLUTION DETECTOR
+  // Catches: promises added to queue but never resolved/rejected
+  // ===============================================
+  
+  // Pattern: Array of callbacks/promises + error path clears without resolving
+  const hasCallbackQueue = /(?:pending|queue|waiting|subscribers|callbacks)\s*[\[.:]|\.push\s*\(\s*(?:resolve|reject|callback|cb|handler)/i.test(fullCode);
+  
+  if (hasCallbackQueue) {
+    // Check for proper resolution on ALL code paths
+    const resolvesAll = /\.forEach\s*\(\s*(?:\w+\s*=>\s*\w+\s*\(|(?:resolve|reject|cb|callback))/i.test(fullCode);
+    const clearsWithoutResolving = /=\s*\[\s*\]|\.length\s*=\s*0|\.splice\s*\(\s*0|\.shift\s*\(\s*\)/.test(fullCode);
+    const hasErrorPath = /catch\s*\(|\.catch\s*\(|if\s*\(\s*(?:error|err|e)\s*\)|error\s*\)\s*\{/i.test(fullCode);
+    
+    // Check if error paths also resolve pending promises
+    if (hasErrorPath) {
+      const catches = [...fullCode.matchAll(/catch\s*\([^)]*\)\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g)];
+      for (const catchMatch of catches) {
+        const catchBody = catchMatch[1];
+        const lineNum = fullCode.substring(0, catchMatch.index).split('\n').length;
+        
+        // Error path clears queue without resolving waiters
+        if (/=\s*\[\s*\]|\.length\s*=\s*0|\.splice\s*\(0/.test(catchBody) && 
+            !/\.forEach|\.map\s*\(|while\s*\([^)]*\.length/.test(catchBody)) {
+          issues.push({
+            line: lineNum,
+            message: 'Promise liveness bug: Error path clears queue without resolving pending promises - causes UI hang',
+            severity: 'critical',
+            rule: 'auth/promise-liveness',
+            suggestion: 'Before clearing: pendingRequests.forEach(p => p.reject(error)); pendingRequests = [];',
+            category: 'concurrency',
+          });
+        }
+      }
+    }
+    
+    // CRITICAL: Detect the specific pattern where success path resolves but error path clears without rejecting
+    // Pattern: if (ok) { ...forEach...resolve... } else { ...= []... }
+    const ifElsePattern = /if\s*\([^)]*\)\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}\s*else\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g;
+    let match;
+    while ((match = ifElsePattern.exec(fullCode)) !== null) {
+      const ifBlock = match[1];
+      const elseBlock = match[2];
+      
+      // Success path has forEach with resolve
+      const successHasResolve = /\.forEach\s*\([^)]*(?:resolve|reject)/.test(ifBlock);
+      // Error path clears without forEach
+      const errorClearsWithoutReject = /=\s*\[\s*\]/.test(elseBlock) && !/\.forEach|\.reject/.test(elseBlock);
+      
+      if (successHasResolve && errorClearsWithoutReject) {
+        const lineNum = fullCode.substring(0, match.index).split('\n').length;
+        issues.push({
+          line: lineNum,
+          message: 'Lost requests on error: Success resolves pending requests but error path clears queue without rejecting',
+          severity: 'critical',
+          rule: 'auth/lost-requests-on-error',
+          suggestion: 'In error path: pendingRequests.forEach(p => p.reject(error)); pendingRequests = [];',
+          category: 'concurrency',
+        });
+      }
+    }
+    
+    // Check if queue is populated but no resolve/reject in some paths
+    if (clearsWithoutResolving && !resolvesAll) {
+      const clearLine = lines.findIndex(l => /=\s*\[\s*\]|\.length\s*=\s*0/.test(l)) + 1;
+      issues.push({
+        line: clearLine || 1,
+        message: 'Lost requests: Callback/promise queue cleared without notifying all waiters',
+        severity: 'critical',
+        rule: 'auth/lost-promises',
+        suggestion: 'Always notify waiters before clearing: queue.forEach(cb => cb(result)); queue = [];',
+        category: 'concurrency',
+      });
+    }
+    
+    // Promises pushed but no path shows resolution
+    const pushesPromise = /\.push\s*\(\s*(?:new Promise|resolve|reject|{\s*resolve|{\s*reject)/i.test(fullCode);
+    const hasAnyResolve = /\.forEach\s*\([^)]*(?:resolve|reject)|while\s*\([^)]*\.length[^)]*\)[^{]*\{[^}]*(?:resolve|reject)/i.test(fullCode);
+    
+    if (pushesPromise && !hasAnyResolve) {
+      issues.push({
+        line: 1,
+        message: 'Promise queue populated but no code path resolves/rejects all waiters - deadlock risk',
+        severity: 'critical',
+        rule: 'auth/unresolved-promises',
+        suggestion: 'Ensure all queued promises are resolved: const resolve = pendingQueue.shift(); resolve(result);',
+        category: 'concurrency',
+      });
+    }
+  }
+  
+  // ===============================================
+  // 2. AUTH REFRESH STATE MACHINE DETECTOR
+  // Catches: race conditions, infinite loops, missing terminal states
+  // ===============================================
+  
+  // Pattern: Boolean flag like isRefreshing without proper synchronization
+  const refreshFlagMatch = fullCode.match(/(?:let|var)\s+(is(?:Refreshing|Loading|Fetching|Pending)|refreshing|tokenRefresh\w*)\s*=\s*(?:false|true)/i);
+  
+  if (refreshFlagMatch) {
+    const flagName = refreshFlagMatch[1];
+    const flagLine = fullCode.substring(0, refreshFlagMatch.index).split('\n').length;
+    
+    // Race condition: Check flag without mutex/lock
+    // Pattern: if (isRefreshing) { wait } else { isRefreshing = true; refresh() }
+    const checkAndSet = new RegExp(`if\\s*\\(\\s*!?${flagName}\\s*\\)[^{]*\\{[^}]*${flagName}\\s*=\\s*true`, 'i');
+    const hasRaceProtection = /mutex|lock|semaphore|atomic|Promise\.race|single.*refresh|once/i.test(fullCode);
+    
+    if (checkAndSet.test(fullCode) && !hasRaceProtection) {
+      issues.push({
+        line: flagLine,
+        message: `Race condition: Multiple callers can pass '${flagName}' check before flag is set - causes duplicate refresh calls`,
+        severity: 'critical',
+        rule: 'auth/refresh-race',
+        suggestion: `Use mutex or single promise: let refreshPromise = null; if (!refreshPromise) { refreshPromise = doRefresh().finally(() => refreshPromise = null); } return refreshPromise;`,
+        category: 'concurrency',
+      });
+    }
+    
+    // Missing terminal state: refresh flag set true but never reset on all paths
+    const setsTrue = new RegExp(`${flagName}\\s*=\\s*true`, 'gi');
+    const setsFalse = new RegExp(`${flagName}\\s*=\\s*false`, 'gi');
+    const trueCount = (fullCode.match(setsTrue) || []).length;
+    const falseCount = (fullCode.match(setsFalse) || []).length;
+    
+    if (trueCount > falseCount) {
+      issues.push({
+        line: flagLine,
+        message: `State leak: '${flagName}' set to true ${trueCount}x but false only ${falseCount}x - may get stuck`,
+        severity: 'high',
+        rule: 'auth/stuck-state',
+        suggestion: 'Use try/finally to ensure flag reset: try { isRefreshing = true; await refresh(); } finally { isRefreshing = false; }',
+        category: 'reliability',
+      });
+    }
+    
+    // Check for finally block (proper cleanup)
+    if (trueCount > 0 && !/finally\s*\{[^}]*false/.test(fullCode)) {
+      issues.push({
+        line: flagLine,
+        message: `No finally block to reset '${flagName}' - flag stuck on error`,
+        severity: 'high',
+        rule: 'auth/missing-finally',
+        suggestion: 'Wrap in try/finally: try { flag = true; await op(); } finally { flag = false; }',
+        category: 'reliability',
+      });
+    }
+  }
+  
+  // Infinite refresh loop: refresh response triggers another refresh
+  const hasRefreshCall = /refresh\s*\(|refreshToken|getNewToken|renewToken/i.test(fullCode);
+  const has401Check = /401|Unauthorized|token.*expired|expired.*token/i.test(fullCode);
+  
+  if (hasRefreshCall && has401Check) {
+    // Check if refresh endpoint returning 401 causes infinite loop
+    const loopEscape = /retry\s*(?:count|limit|max)|maxRetries|attempts\s*[<>]|break|return.*null|logout|clearToken|signOut/i.test(fullCode);
+    
+    if (!loopEscape) {
+      const refreshLine = lines.findIndex(l => /refresh\s*\(|refreshToken/i.test(l)) + 1;
+      issues.push({
+        line: refreshLine || 1,
+        message: 'Infinite refresh loop: No escape condition if refresh endpoint returns 401/invalid token',
+        severity: 'critical',
+        rule: 'auth/infinite-refresh',
+        suggestion: 'Add max retry count or detect refresh-token-expired separately: if (isRefreshTokenExpired(error)) { logout(); return; }',
+        category: 'reliability',
+      });
+    }
+    
+    // Check for forced logout on refresh failure
+    const hasLogout = /logout|signOut|clearAuth|clearSession|removeToken/i.test(fullCode);
+    if (!hasLogout) {
+      issues.push({
+        line: 1,
+        message: 'Broken logout flow: No forced logout when refresh token expires - user stuck in invalid state',
+        severity: 'high',
+        rule: 'auth/missing-logout',
+        suggestion: 'Handle refresh failure: if (refreshFailed) { clearTokens(); redirectToLogin(); }',
+        category: 'reliability',
+      });
+    }
+  }
+  
+  // Shared mutable global auth state (module-level variables)
+  // Pattern: let token = ...; used across async functions
+  const authStateVars = fullCode.match(/(?:let|var)\s+(token|accessToken|refreshToken|authToken|currentUser|isRefreshing|pendingRequests)\s*=/gi) || [];
+  
+  if (authStateVars.length > 0) {
+    // Check if these are at module level (not inside a function)
+    const lines = fileContent.split('\n');
+    let funcDepth = 0;
+    let moduleStateVars = [];
+    
+    lines.forEach((line, idx) => {
+      funcDepth += (line.match(/function\s*\w*\s*\(|=>\s*\{|{\s*$/g) || []).length;
+      funcDepth -= (line.match(/^\s*\}/g) || []).length;
+      funcDepth = Math.max(0, funcDepth);
+      
+      // Module level variable declarations (depth 0)
+      if (funcDepth === 0) {
+        const varMatch = line.match(/(?:let|var)\s+(token|accessToken|refreshToken|authToken|currentUser|isRefreshing|pendingRequests)\s*=/i);
+        if (varMatch) {
+          moduleStateVars.push({ name: varMatch[1], line: idx + 1 });
+        }
+      }
+    });
+    
+    if (moduleStateVars.length > 0) {
+      const varNames = moduleStateVars.map(v => v.name).join(', ');
+      issues.push({
+        line: moduleStateVars[0].line,
+        message: `Shared mutable global auth state (${varNames}): Concurrent requests can corrupt during refresh`,
+        severity: 'high',
+        rule: 'auth/global-state',
+        suggestion: 'Encapsulate in singleton class with mutex, or use request-scoped state with AsyncLocalStorage.',
+        category: 'concurrency',
+      });
+    }
+  }
+  
+  // ===============================================
+  // 3. THUNDERING HERD / RETRY STORM DETECTOR
+  // Catches: all queued requests retried at once
+  // ===============================================
+  
+  // Pattern: queue.forEach(cb => cb()) after success - all fire simultaneously
+  const hasQueueFlush = /\.forEach\s*\(\s*(?:\w+\s*=>\s*\w+\s*\.|(?:cb|callback|resolve|req|handler)\s*=>)/i.test(fullCode);
+  const hasQueue = /pending|queue|waiting|subscribers|callbacks/i.test(fullCode);
+  
+  if (hasQueueFlush && hasQueue) {
+    // Check for staggering/batching
+    const hasStagger = /setTimeout\s*\(\s*\(\s*\)\s*=>[^,]+,\s*i\s*\*|delay|stagger|batch|chunk|throttle|rateLimi|jitter|spread/i.test(fullCode);
+    
+    if (!hasStagger) {
+      const flushLine = lines.findIndex(l => /\.forEach\s*\([^)]*(?:resolve|reject|cb|callback|handler|req\s*=>)/i.test(l)) + 1;
+      issues.push({
+        line: flushLine || 1,
+        message: 'Refresh stampede: All queued requests retry simultaneously after refresh - can overwhelm server',
+        severity: 'high',
+        rule: 'auth/thundering-herd',
+        suggestion: 'Stagger retries: pendingRequests.forEach((req, i) => setTimeout(() => req.retry(), i * 50));',
+        category: 'reliability',
+      });
+    }
+  }
+  
+  // Check for immediate retry without backoff after auth success
+  const hasRetry = /retry|requeue|resend|refetch/i.test(fullCode);
+  if (hasRetry && hasQueueFlush) {
+    const hasBackoff = /backoff|jitter|Math\.random|delay\s*\*|spread/i.test(fullCode);
+    if (!hasBackoff) {
+      issues.push({
+        line: 1,
+        message: 'Retry storm: Immediate retries without jitter/backoff after refresh success',
+        severity: 'medium',
+        rule: 'auth/retry-storm',
+        suggestion: 'Add jitter: const delay = baseDelay + Math.random() * 100; await sleep(delay);',
+        category: 'reliability',
+      });
+    }
+  }
+  
+  // ===============================================
+  // 4. SILENT UI HANG DETECTION
+  // Catches: async operations that never complete from user perspective
+  // ===============================================
+  
+  // New Promise without timeout
+  const hasNewPromise = /new Promise\s*\(\s*(?:async\s*)?\(?\s*(?:resolve|reject)/i.test(fullCode);
+  const hasTimeout = /timeout|setTimeout.*reject|Promise\.race\s*\(\s*\[|AbortController|timeoutMs/i.test(fullCode);
+  
+  if (hasNewPromise && !hasTimeout) {
+    const promiseLine = lines.findIndex(l => /new Promise\s*\(/i.test(l)) + 1;
+    issues.push({
+      line: promiseLine || 1,
+      message: 'Silent hang: Promise may never resolve/reject - no timeout mechanism',
+      severity: 'high',
+      rule: 'auth/no-timeout',
+      suggestion: 'Add timeout: Promise.race([operation, new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 30000))]);',
+      category: 'reliability',
+    });
+  }
+  
+  // Return new Promise that depends on external callback
+  const externalResolve = /return\s+new Promise[^}]*\.push\s*\(\s*(?:resolve|reject|\{[^}]*resolve)/i.test(fullCode);
+  if (externalResolve) {
+    const extLine = lines.findIndex(l => /return\s+new Promise/i.test(l)) + 1;
+    issues.push({
+      line: extLine || 1,
+      message: 'External resolution dependency: Promise resolution depends on another callback - fragile chain',
+      severity: 'medium',
+      rule: 'auth/external-resolve',
+      suggestion: 'Add timeout and error handling for the external callback scenario.',
+      category: 'reliability',
+    });
+  }
+  
+  return issues;
+}
+
 // Helper function to provide fix suggestions
 function getFixSuggestion(ruleId) {
   const suggestions = {
@@ -667,7 +1281,7 @@ function detectPatternIssues(fileContent, fileName) {
   const issues = { security: [], performance: [], style: [] };
   const lines = fileContent.split('\n');
 
-  // ✅ Track loop depth properly to avoid false positives
+  //   Track loop depth properly to avoid false positives
   let loopDepth = 0;
   let braceStack = []; // Track brace context
 
@@ -877,7 +1491,7 @@ function detectPatternIssues(fileContent, fileName) {
 }
 
 async function analyzeCode(fileContent, fileName) {
-  // ✅ DLQ testing with structured error
+  //   DLQ testing with structured error
   if (process.env.ALLOW_FORCE_FAIL === "true" && fileName === "force_fail.js") {
     throw new AnalysisError(ERROR_CODES.FORCED_FAILURE, "Forced failure for DLQ testing");
   }
@@ -886,12 +1500,43 @@ async function analyzeCode(fileContent, fileName) {
 
   try {
     // ============================================
+    // STAGE 0: Detect Language
+    // ============================================
+    const language = detectLanguage(fileName, fileContent);
+    console.log(`🔍 Detected language: ${language}`);
+
+    // ============================================
     // STAGE 1a: Pattern-based Analysis
     // ============================================
     const patternIssues = detectPatternIssues(fileContent, fileName);
 
     // ============================================
-    // STAGE 1b: Async/Concurrency Bug Detection
+    // STAGE 1b: Language-Specific Detection
+    // ============================================
+    let langIssues = [];
+    if (language === 'java') {
+      langIssues = detectJavaIssues(fileContent, fileName);
+      console.log(`☕ Java analysis: ${langIssues.length} issues found`);
+    } else if (language === 'python') {
+      langIssues = detectPythonIssues(fileContent, fileName);
+      console.log(`🐍 Python analysis: ${langIssues.length} issues found`);
+    }
+    
+    // Merge language-specific issues
+    langIssues.forEach(issue => {
+      if (issue.category === 'security') {
+        patternIssues.security.push(issue);
+      } else if (issue.category === 'performance') {
+        patternIssues.performance.push(issue);
+      } else if (issue.category === 'reliability') {
+        patternIssues.security.push(issue); // Reliability issues are critical
+      } else {
+        patternIssues.style.push(issue);
+      }
+    });
+
+    // ============================================
+    // STAGE 1c: Async/Concurrency Bug Detection
     // ============================================
     const asyncIssues = detectAsyncIssues(fileContent, fileName);
     
@@ -905,7 +1550,7 @@ async function analyzeCode(fileContent, fileName) {
     });
 
     // ============================================
-    // STAGE 1c: Semantic/Logic Bug Detection
+    // STAGE 1d: Semantic/Logic Bug Detection
     // ============================================
     const semanticIssues = detectSemanticIssues(fileContent, fileName);
     
@@ -921,82 +1566,93 @@ async function analyzeCode(fileContent, fileName) {
     });
 
     // ============================================
-    // STAGE 1d: Static Analysis (ESLint)
+    // STAGE 1e: Auth-Specific Bug Detection
+    // Catches: promise liveness, refresh races, thundering herd
     // ============================================
-
-    const eslint = new ESLint({
-      overrideConfigFile: true,
-      overrideConfig: [
-        {
-          files: ['**/*.js', '**/*.jsx'],
-          languageOptions: {
-            ecmaVersion: 2021,
-            sourceType: 'module',
-            globals: {
-              // Node.js globals
-              __dirname: 'readonly',
-              __filename: 'readonly',
-              Buffer: 'readonly',
-              clearImmediate: 'readonly',
-              clearInterval: 'readonly',
-              clearTimeout: 'readonly',
-              global: 'readonly',
-              process: 'readonly',
-              setImmediate: 'readonly',
-              setInterval: 'readonly',
-              setTimeout: 'readonly',
-              // Browser globals
-              window: 'readonly',
-              document: 'readonly',
-              console: 'readonly',
-              fetch: 'readonly',
-            },
-          },
-          rules: {
-            'no-eval': 'error',
-            'no-implied-eval': 'error',
-            'no-new-func': 'error',
-            'no-await-in-loop': 'warn',
-            'no-console': 'warn',
-            'no-debugger': 'error',
-            'no-unused-vars': 'warn',
-          },
-        },
-      ],
+    const authIssues = detectAuthIssues(fileContent, fileName);
+    
+    // Auth issues are critical - all go to security
+    authIssues.forEach(issue => {
+      patternIssues.security.push(issue);
     });
+    console.log(`🔐 Auth analysis: ${authIssues.length} issues found`);
 
-    const results = await eslint.lintText(fileContent, { filePath: fileName });
-
+    // ============================================
+    // STAGE 1f: Static Analysis (ESLint) - JavaScript/TypeScript only
+    // ============================================
     const issues = {
       security: [...patternIssues.security],
       performance: [...patternIssues.performance],
       style: [...patternIssues.style],
     };
 
-    const securityRules = ['no-eval', 'no-implied-eval', 'no-new-func'];
-    const performanceRules = ['no-await-in-loop'];
+    if (language === 'javascript' || language === 'typescript') {
+      const eslint = new ESLint({
+        overrideConfigFile: true,
+        overrideConfig: [
+          {
+            files: ['**/*.js', '**/*.jsx'],
+            languageOptions: {
+              ecmaVersion: 2021,
+              sourceType: 'module',
+              globals: {
+                __dirname: 'readonly',
+                __filename: 'readonly',
+                Buffer: 'readonly',
+                clearImmediate: 'readonly',
+                clearInterval: 'readonly',
+                clearTimeout: 'readonly',
+                global: 'readonly',
+                process: 'readonly',
+                setImmediate: 'readonly',
+                setInterval: 'readonly',
+                setTimeout: 'readonly',
+                window: 'readonly',
+                document: 'readonly',
+                console: 'readonly',
+                fetch: 'readonly',
+              },
+            },
+            rules: {
+              'no-eval': 'error',
+              'no-implied-eval': 'error',
+              'no-new-func': 'error',
+              'no-await-in-loop': 'warn',
+              'no-console': 'warn',
+              'no-debugger': 'error',
+              'no-unused-vars': 'warn',
+            },
+          },
+        ],
+      });
 
-    results[0].messages.forEach((msg) => {
-      const issue = {
-        line: msg.line,
-        column: msg.column,
-        message: msg.message,
-        severity: msg.severity === 2 ? 'high' : 'medium',
-        rule: msg.ruleId,
-        file: fileName,
-        suggestion: getFixSuggestion(msg.ruleId),
-      };
+      const results = await eslint.lintText(fileContent, { filePath: fileName });
 
-      if (securityRules.includes(msg.ruleId)) {
-        issues.security.push(issue);
-      } else if (performanceRules.includes(msg.ruleId)) {
-        issues.performance.push(issue);
-      } else {
-        issues.style.push(issue);
-      }
-    });
+      const securityRules = ['no-eval', 'no-implied-eval', 'no-new-func'];
+      const performanceRules = ['no-await-in-loop'];
 
-    console.log(`✅ Static analysis complete: ${issues.security.length} security, ${issues.performance.length} performance, ${issues.style.length} style issues`);
+      results[0].messages.forEach((msg) => {
+        const issue = {
+          line: msg.line,
+          column: msg.column,
+          message: msg.message,
+          severity: msg.severity === 2 ? 'high' : 'medium',
+          rule: msg.ruleId,
+          file: fileName,
+          suggestion: getFixSuggestion(msg.ruleId),
+        };
+
+        if (securityRules.includes(msg.ruleId)) {
+          issues.security.push(issue);
+        } else if (performanceRules.includes(msg.ruleId)) {
+          issues.performance.push(issue);
+        } else {
+          issues.style.push(issue);
+        }
+      });
+    }
+
+    console.log(`  Static analysis complete: ${issues.security.length} security, ${issues.performance.length} performance, ${issues.style.length} style issues`);
 
     // ============================================
     // STAGE 2: AI Analysis (Smart)
@@ -1085,14 +1741,14 @@ async function analyzeCode(fileContent, fileName) {
       },
     };
   } catch (error) {
-    // ✅ Structured error handling with context
+    //   Structured error handling with context
     const analysisError = new AnalysisError(
       error.code || ERROR_CODES.ESLINT_FAILED,
       `Analysis failed for ${fileName}: ${error.message}`,
       error
     );
     
-    console.error('❌ Analysis error:', {
+    console.error('  Analysis error:', {
       code: analysisError.code,
       fileName,
       message: error.message,

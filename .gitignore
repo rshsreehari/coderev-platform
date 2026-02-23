@@ -1,37 +1,79 @@
-# Ignore all markdown files
-*.md
-*.MD
-
-# Ignore text files like internal docs
-*.txt
-
-# Node
-node_modules/
-backend/node_modules/
-frontend/node_modules/
-
-# Environment files
+# ═══════════════════════════════════════════════════════
+# ENVIRONMENT & SECRETS (NEVER push these)
+# ═══════════════════════════════════════════════════════
 .env
-.env.local
-backend/.env.local
-frontend/.env.local
+.env.*
+!.env.example
+backend/.env*
+!backend/.env.example
+frontend/.env*
+!frontend/.env.example
 
-# LocalStack data
-localstack-data/
+# ═══════════════════════════════════════════════════════
+# INFRASTRUCTURE CONFIG (contains real AWS credentials)
+# ═══════════════════════════════════════════════════════
+infrastructure/config.sh
+backend/.env.production.template
 
-# Logs
-*.log
+# ═══════════════════════════════════════════════════════
+# SSH KEYS & CERTIFICATES
+# ═══════════════════════════════════════════════════════
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+backend/certs/
 
-# OS
-.DS_Store
+# ═══════════════════════════════════════════════════════
+# NODE
+# ═══════════════════════════════════════════════════════
+node_modules/
+package-lock.json
 
-# VSCode
-.vscode/
 
-#.sh file
-*.sh
 
-# Build outputs
+# ═══════════════════════════════════════════════════════
+# BUILD OUTPUTS
+# ═══════════════════════════════════════════════════════
 dist/
 build/
 coverage/
+
+# ═══════════════════════════════════════════════════════
+# LOCALSTACK DATA
+# ═══════════════════════════════════════════════════════
+localstack-data/
+
+# ═══════════════════════════════════════════════════════
+# LOGS
+# ═══════════════════════════════════════════════════════
+*.log
+logs/
+
+# ═══════════════════════════════════════════════════════
+# OS & EDITOR
+# ═══════════════════════════════════════════════════════
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ═══════════════════════════════════════════════════════
+# MARKDOWN (ignore all except README)
+# ═══════════════════════════════════════════════════════
+*.md
+!README.md
+*.txt
+
+# ═══════════════════════════════════════════════════════
+# ROOT TEST / SETUP SCRIPTS (not part of app source)
+# ═══════════════════════════════════════════════════════
+/setup.sh
+/test-dlq.sh
+/verify-dlq.sh
+/test-api.js
+/test-async-bugs.js
+/test-bad-code.js
+/test-comprehensive-bugs.js
+/test-with-suggestions.js

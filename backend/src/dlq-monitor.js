@@ -1,4 +1,6 @@
-require("dotenv").config({ path: ".env.local" });
+// Load environment: .env.production for AWS, .env.local for dev
+const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env.local';
+require("dotenv").config({ path: envFile });
 
 const pool = require("./config/database");
 const { ensureQueuesExist } = require("./config/queue");

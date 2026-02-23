@@ -1,0 +1,45 @@
+#!/bin/bash
+# ============================================================
+# AWS INFRASTRUCTURE CONFIGURATION — TEMPLATE
+# ============================================================
+# Copy this file:  cp config.sh.example config.sh
+# Then fill in your actual AWS resource values.
+# config.sh is gitignored and will NOT be pushed.
+# ============================================================
+
+# ── AWS Account ──────────────────────────────────────────────
+export AWS_REGION="us-west-2"
+export AWS_ACCOUNT_ID="your_aws_account_id"
+
+# ── VPC & Networking ────────────────────────────────────────
+export VPC_ID="vpc-xxxxxxxxxxxxxxxxx"
+export SUBNET_PUBLIC="subnet-xxxxxxxxxxxxxxxxx"
+
+# ── RDS PostgreSQL ──────────────────────────────────────────
+export RDS_ENDPOINT="your-rds-endpoint.region.rds.amazonaws.com"
+export RDS_DB_NAME="codereviews"
+export RDS_USERNAME="postgres"
+export RDS_PASSWORD="your_rds_password_here"
+
+# ── ElastiCache Redis ──────────────────────────────────────
+export REDIS_ENDPOINT="your-redis-endpoint.cache.amazonaws.com"
+export REDIS_PORT="6379"
+
+# ── SQS ─────────────────────────────────────────────────────
+export SQS_MAIN_QUEUE_URL="https://sqs.us-west-2.amazonaws.com/ACCOUNT_ID/coderev-jobs"
+export SQS_DLQ_URL="https://sqs.us-west-2.amazonaws.com/ACCOUNT_ID/coderev-jobs-dlq"
+
+# ── EC2 ─────────────────────────────────────────────────────
+export EC2_INSTANCE_ID="i-xxxxxxxxxxxxxxxxx"
+export EC2_PUBLIC_IP="x.x.x.x"
+export EC2_KEY_NAME="your-key-name"
+export EC2_KEY_FILE="$HOME/Downloads/your-key.pem"
+
+# ── Application ─────────────────────────────────────────────
+export APP_PORT="3000"
+export NODE_ENV="production"
+
+# ── AI Configuration ────────────────────────────────────────
+export AI_API_KEY="your_gemini_api_key_here"
+export AI_PROVIDER="gemini"
+export AI_MODEL="gemini-2.0-flash"

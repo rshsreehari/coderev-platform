@@ -1,4 +1,3 @@
-const { v4: uuidv4 } = require('uuid');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -21,7 +20,7 @@ async function submitReview(req, res) {
     const cachedResult = await getCachedReview(codeHash);
 
     if (cachedResult) {
-      const jobId = uuidv4();
+      const jobId = crypto.randomUUID();
 
       // Preserve original analysis time and update for cache hit
       const originalReviewTime = cachedResult.metrics?.reviewTime || 'N/A';
@@ -55,7 +54,7 @@ async function submitReview(req, res) {
     }
 
     // Queue for processing
-    const jobId = uuidv4();
+    const jobId = crypto.randomUUID();
 
     await pool.query(
       `INSERT INTO review_jobs (id, user_id, code_hash, file_name, file_content, status)
